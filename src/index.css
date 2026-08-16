@@ -122,6 +122,19 @@ body {
   padding: 0 14px;
   font-size: 14px;
 }
+.btn.round-sm {
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+  border-radius: 10px;
+}
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
 /* ---------- timeline surface ---------- */
 .surface-wrap {
@@ -173,15 +186,16 @@ body {
 .tick {
   position: absolute;
   width: 1px;
-  height: 8px;
-  background: var(--muted);
+  height: 11px;
+  background: #7d8aa0;
   transform: translateX(-0.5px);
 }
 .tick-label {
   position: absolute;
   transform: translateX(-50%);
-  font-size: 12px;
-  color: var(--muted);
+  font-size: 15px;
+  font-weight: 650;
+  color: #d3dced;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -214,38 +228,38 @@ body {
 }
 .event-dot {
   position: absolute;
-  width: 12px;
-  height: 12px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--accent);
-  border: 2px solid var(--bg);
+  border: 1.5px solid var(--bg);
   transform: translate(-50%, -50%);
-  box-shadow: 0 0 8px rgba(74, 163, 255, 0.7);
+  box-shadow: 0 0 7px rgba(74, 163, 255, 0.7);
 }
 .event-card {
   position: absolute;
-  height: 46px;
+  height: 32px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 6px 9px;
+  border-radius: 8px;
+  padding: 3px 7px;
   overflow: hidden;
   cursor: pointer;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 4px 11px rgba(0, 0, 0, 0.35);
 }
 .event-title {
-  font-size: 12.5px;
+  font-size: 11px;
   font-weight: 650;
-  line-height: 1.15;
+  line-height: 1.1;
   display: -webkit-box;
   -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 .event-year {
-  font-size: 11px;
+  font-size: 9px;
   color: var(--muted);
-  margin-top: 3px;
+  margin-top: 1px;
   font-variant-numeric: tabular-nums;
 }
 .event-year-lvl {
@@ -298,6 +312,16 @@ body {
 .empty-sub {
   font-size: 14px;
   line-height: 1.4;
+}
+
+.fs-controls {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  left: max(12px, env(safe-area-inset-left));
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 5;
 }
 
 .zoom-controls {

@@ -11,6 +11,7 @@ import {
 } from "./storage";
 import { pullRemote, pushRemote, syncEnabled } from "./sync";
 import {
+  clampView,
   computeTicks,
   DEFAULT_LEVEL,
   floorVisibleLevel,
@@ -29,8 +30,10 @@ import {
   zoomAround,
 } from "./timeline";
 
-const LANE_H = 62;
-const AXIS_FRAC = 0.68; // axis vertical position as fraction of surface height
+const LANE_H = 40; // vertical spacing between stacked event lanes
+const CARD_H = 32; // event card height
+const AXIS_GAP = 10; // gap between the axis and the lowest card lane
+const AXIS_FRAC = 0.7; // axis vertical position as fraction of surface height
 const DRAG_THRESHOLD = 6; // px of movement before a touch counts as a pan, not a tap
 
 export default function App() {
@@ -42,6 +45,7 @@ export default function App() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<TimelineEvent | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
 
   const surfaceRef = useRef<HTMLDivElement>(null);
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -60,6 +64,15 @@ export default function App() {
   eventsRef.current = events;
   updatedAtRef.current = updatedAt;
 
+  const sizeRef = useRef(size);
+  sizeRef.current = size;
+  const clampedInit = useRef(false);
+  const presentYear = new Date().getFullYear();
+  const clamp = useCallback(
+    (v: ViewState) => clampView(v, sizeRef.current.width, presentYear),
+    [presentYear],
+  );
+
   // Measure the surface and react to orientation / window changes.
   useLayoutEffect(() => {
     const el = surfaceRef.current;
@@ -75,11 +88,21 @@ export default function App() {
   // Initialise the default view once we know the surface width: present year
   // near the right edge, showing roughly the last few centuries.
   useEffect(() => {
-    if (view || size.width === 0) return;
-    const present = new Date().getFullYear();
-    const pxPerYear = 5;
-    setView({ leftYear: present - (size.width * 0.82) / pxPerYear, pxPerYear });
-  }, [view, size.width]);
+    if (size.width === 0) return;
+    if (!view) {
+      const pxPerYear = 5;
+      setView(
+        clamp({
+          leftYear: presentYear - (size.width * 0.82) / pxPerYear,
+          pxPerYear,
+        }),
+      );
+      clampedInit.current = true;
+    } else if (!clampedInit.current) {
+      clampedInit.current = true;
+      setView((v) => (v ? clamp(v) : v));
+    }
+  }, [view, size.width, clamp, presentYear]);
 
   useEffect(() => saveEvents(events), [events]);
   useEffect(() => saveUpdatedAt(updatedAt), [updatedAt]);
@@ -148,7 +171,7 @@ export default function App() {
       const rect = el.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const factor = Math.exp(-e.deltaY * 0.0016);
-      setView((v) => (v ? zoomAround(v, x, factor) : v));
+      setView((v) => (v ? clamp(zoomAround(v, x, factor)) : v));
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
@@ -202,7 +225,7 @@ export default function App() {
     }
     const dcx = cx - g.cx;
     const factor = pts.length >= 2 && g.dist > 0 && dist > 0 ? dist / g.dist : 1;
-    setView((v) => (v ? panBy(zoomAround(v, cx, factor), dcx) : v));
+    setView((v) => (v ? clamp(panBy(zoomAround(v, cx, factor), dcx)) : v));
     gesture.current = { cx, dist };
   };
 
@@ -219,14 +242,18 @@ export default function App() {
 
   const zoomButton = (factor: number) => {
     if (!view || size.width === 0) return;
-    setView((v) => (v ? zoomAround(v, size.width / 2, factor) : v));
+    setView((v) => (v ? clamp(zoomAround(v, size.width / 2, factor)) : v));
   };
 
   const goToPresent = () => {
     if (size.width === 0) return;
-    const present = new Date().getFullYear();
     const pxPerYear = 5;
-    setView({ leftYear: present - (size.width * 0.82) / pxPerYear, pxPerYear });
+    setView(
+      clamp({
+        leftYear: presentYear - (size.width * 0.82) / pxPerYear,
+        pxPerYear,
+      }),
+    );
   };
 
   const upsertEvent = (ev: TimelineEvent) => {
@@ -253,23 +280,34 @@ export default function App() {
   const hiddenCount = events.length - shownEvents.length;
   const floor = view ? floorVisibleLevel(view) : 6;
 
+  const openAdd = () => {
+    setEditing(null);
+    setFormOpen(true);
+  };
+
   return (
     <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-dot" />
-          World History Timeline
-        </div>
-        <button
-          className="btn btn-primary"
-          onClick={() => {
-            setEditing(null);
-            setFormOpen(true);
-          }}
-        >
-          + Add Event
-        </button>
-      </header>
+      {!fullscreen && (
+        <header className="topbar">
+          <div className="brand">
+            <span className="brand-dot" />
+            World History Timeline
+          </div>
+          <div className="topbar-actions">
+            <button
+              className="btn round-sm"
+              onClick={() => setFullscreen(true)}
+              aria-label="Full screen"
+              title="Full screen"
+            >
+              ⛶
+            </button>
+            <button className="btn btn-primary" onClick={openAdd}>
+              + Add Event
+            </button>
+          </div>
+        </header>
+      )}
 
       <div className="surface-wrap">
         <div
@@ -305,6 +343,26 @@ export default function App() {
               {floor >= 1
                 ? `Showing events significant for ≥ ${LEVEL_SPAN_LABEL[floor]} · ${hiddenCount} hidden`
                 : `Zoom in to reveal events`}
+            </div>
+          )}
+
+          {fullscreen && (
+            <div className="fs-controls">
+              <button
+                className="btn round"
+                onClick={() => setFullscreen(false)}
+                aria-label="Exit full screen"
+                title="Exit full screen"
+              >
+                ⛶
+              </button>
+              <button
+                className="btn btn-primary round wide"
+                onClick={openAdd}
+                aria-label="Add event"
+              >
+                + Event
+              </button>
             </div>
           )}
 
@@ -365,7 +423,7 @@ function TimelineCanvas({
   const axisY = height * AXIS_FRAC;
   const ticks = computeTicks(width, view);
   const placed = layoutEvents(events, view, width);
-  const maxLanes = Math.max(1, Math.floor((axisY - 16) / LANE_H));
+  const maxLanes = Math.max(1, Math.floor((axisY - AXIS_GAP) / LANE_H));
 
   const present = new Date().getFullYear();
   const presentX = xOfYear(present, view);
@@ -406,7 +464,7 @@ function TimelineCanvas({
       {/* events above the axis */}
       {placed.map((p) => {
         const lane = p.lane % maxLanes;
-        const cardBottom = axisY - 16 - lane * LANE_H;
+        const cardBottom = axisY - AXIS_GAP - lane * LANE_H;
         return (
           <div
             key={p.event.id}
@@ -415,7 +473,12 @@ function TimelineCanvas({
           >
             <div
               className="event-stem"
-              style={{ left: p.x, top: cardBottom, height: axisY - cardBottom }}
+              style={{
+                left: p.x,
+                top: cardBottom,
+                height: axisY - cardBottom,
+                background: LEVEL_COLOR[p.event.level],
+              }}
             />
             <div
               className="event-dot"
@@ -430,8 +493,9 @@ function TimelineCanvas({
               className="event-card"
               style={{
                 left: p.x - p.width / 2,
-                top: cardBottom - 48,
+                top: cardBottom - CARD_H - 2,
                 width: p.width,
+                height: CARD_H,
                 borderColor: `${LEVEL_COLOR[p.event.level]}66`,
               }}
             >

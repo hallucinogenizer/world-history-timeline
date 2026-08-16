@@ -1,8 +1,10 @@
 import type { TimelineEvent, ViewState } from "./types";
 
-// Zoom limits (pixels per year).
-export const MIN_PX_PER_YEAR = 0.04; // ~25 years per pixel — millennia in view
-export const MAX_PX_PER_YEAR = 100; // finest granularity is a single year
+// Zoom limits (pixels per year). MAX is high enough that the axis can label
+// single years (niceStep === 1), which is when L6 becomes visible; MIN keeps
+// L1 visible even at maximum zoom-out.
+export const MIN_PX_PER_YEAR = 0.1;
+export const MAX_PX_PER_YEAR = 200;
 
 export function clampScale(pxPerYear: number): number {
   return Math.min(MAX_PX_PER_YEAR, Math.max(MIN_PX_PER_YEAR, pxPerYear));
@@ -12,14 +14,11 @@ export function clampScale(pxPerYear: number): number {
 // Importance levels
 // ---------------------------------------------------------------------------
 // An event's level says how long it stayed historically significant. A level
-// is shown while that span of years is not "crammed" on screen — i.e. it spans
-// at least CRAMP_PX pixels: LEVEL_YEARS[level] * pxPerYear >= CRAMP_PX.
-//
-// Tune CRAMP_PX / LEVEL_YEARS to move the cutoffs. With CRAMP_PX = 40 the
-// level transitions happen at pxPerYear = 40 (L6), 4 (L5), 1.6 (L4), 0.8 (L3),
-// 0.4 (L2), 0.04 (L1) — so at max zoom-out (0.04) L1 is still visible.
-export const CRAMP_PX = 40;
-
+// is shown only when its span is at least as coarse as the axis tick step
+// (niceStep) — i.e. when that unit is actually resolvable on the timeline.
+// So L2 (1 century) appears only once the axis is ticking at <= 100-year
+// intervals ("each century is visible"), L6 (1 year) only when years are
+// individually ticked, etc. This matches how the year labels themselves scale.
 export const LEVELS = [1, 2, 3, 4, 5, 6];
 export const DEFAULT_LEVEL = 4;
 
@@ -54,7 +53,7 @@ export const LEVEL_COLOR: Record<number, string> = {
 /** Is an event of this importance level visible at the current zoom? */
 export function levelVisible(level: number, view: ViewState): boolean {
   const span = LEVEL_YEARS[level] ?? LEVEL_YEARS[DEFAULT_LEVEL];
-  return span * view.pxPerYear >= CRAMP_PX;
+  return span >= niceStep(view);
 }
 
 /**
@@ -97,10 +96,34 @@ export function panBy(view: ViewState, dxPixels: number): ViewState {
   return { ...view, leftYear: view.leftYear - dxPixels / view.pxPerYear };
 }
 
-const NICE_STEPS = [
-  1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000,
-  20000, 50000,
-];
+// How far past the present the right edge may scroll, and how far back the left
+// edge may go. The future allowance shrinks with zoom so "now" stays near the
+// right edge instead of leaving a big empty gap.
+export const FUTURE_LIMIT_FRACTION = 0.15;
+export const FUTURE_LIMIT_MAX_YEARS = 80;
+export const PAST_LIMIT_YEAR = -12000;
+
+/** Constrain leftYear so the view can't scroll too far into the future/past. */
+export function clampView(
+  view: ViewState,
+  width: number,
+  presentYear: number,
+): ViewState {
+  if (width <= 0) return view;
+  const span = width / view.pxPerYear;
+  const maxFuture = Math.min(span * FUTURE_LIMIT_FRACTION, FUTURE_LIMIT_MAX_YEARS);
+  const maxLeftYear = presentYear + maxFuture - span; // right edge at present + margin
+  let leftYear = Math.min(view.leftYear, maxLeftYear);
+  if (leftYear < PAST_LIMIT_YEAR) leftYear = PAST_LIMIT_YEAR;
+  return { ...view, leftYear };
+}
+
+// Tick steps are aligned to the importance-level spans (1, 10, 25, 50, 100,
+// 1000) so the axis cadence always matches the finest visible level — when L4
+// (25 yr) events show, the axis ticks at 25. The extra steps (5, 500, …) only
+// refine bands where a single level is visible and are exact multiples of the
+// level spans, so a level's points always appear on the axis.
+const NICE_STEPS = [1, 5, 10, 25, 50, 100, 500, 1000, 5000, 10000, 50000];
 
 /** Choose a "nice" year interval so ticks land roughly every `targetPx` pixels. */
 export function niceStep(view: ViewState, targetPx = 96): number {
@@ -136,13 +159,13 @@ export interface PlacedEvent {
   width: number;
 }
 
-export const CARD_MIN_W = 74;
-export const CARD_MAX_W = 260;
+export const CARD_MIN_W = 54;
+export const CARD_MAX_W = 190;
 
 const TITLE_FONT =
-  '650 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  '650 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 const YEAR_FONT =
-  '400 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  '400 9px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
 
 let measureCtx: CanvasRenderingContext2D | null | undefined;
 function getMeasureCtx(): CanvasRenderingContext2D | null {
@@ -176,7 +199,7 @@ export function estimateCardWidth(event: TimelineEvent): number {
     yearW = yearLine.length * 6;
   }
   const content = Math.max(titleW, yearW);
-  return Math.min(CARD_MAX_W, Math.max(CARD_MIN_W, Math.ceil(content) + 22));
+  return Math.min(CARD_MAX_W, Math.max(CARD_MIN_W, Math.ceil(content) + 15));
 }
 
 /**
