@@ -20,9 +20,9 @@ import {
   zoomAround,
 } from "./timeline";
 
-const CARD_W = 150;
 const LANE_H = 62;
 const AXIS_FRAC = 0.68; // axis vertical position as fraction of surface height
+const DRAG_THRESHOLD = 6; // px of movement before a touch counts as a pan, not a tap
 
 export default function App() {
   const [events, setEvents] = useState<TimelineEvent[]>(() => loadEvents());
@@ -36,7 +36,10 @@ export default function App() {
   const surfaceRef = useRef<HTMLDivElement>(null);
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const gesture = useRef<{ cx: number; dist: number } | null>(null);
-  const down = useRef<{ x: number; y: number; moved: boolean; eventId: string | null } | null>(null);
+  const start = useRef<{ x: number; y: number } | null>(null);
+  // True once the current gesture has moved far enough to be a pan/pinch.
+  // Read by an event's onClick so a drag that ends on a card doesn't open it.
+  const dragged = useRef(false);
 
   // Measure the surface and react to orientation / window changes.
   useLayoutEffect(() => {
@@ -96,15 +99,11 @@ export default function App() {
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
-    (e.target as Element).setPointerCapture?.(e.pointerId);
     pointers.current.set(e.pointerId, { x: relX(e.clientX), y: e.clientY });
-    const hit = (e.target as Element).closest?.("[data-event-id]");
-    down.current = {
-      x: relX(e.clientX),
-      y: e.clientY,
-      moved: false,
-      eventId: hit?.getAttribute("data-event-id") ?? null,
-    };
+    if (pointers.current.size === 1) {
+      dragged.current = false;
+      start.current = { x: relX(e.clientX), y: e.clientY };
+    }
     rebaseline();
   };
 
@@ -112,15 +111,18 @@ export default function App() {
     if (!pointers.current.has(e.pointerId)) return;
     pointers.current.set(e.pointerId, { x: relX(e.clientX), y: e.clientY });
 
-    if (down.current) {
-      const dx = relX(e.clientX) - down.current.x;
-      const dy = e.clientY - down.current.y;
-      if (Math.hypot(dx, dy) > 6) down.current.moved = true;
-    }
-
     const pts = [...pointers.current.values()];
     const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+    const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
     const dist = pts.length >= 2 ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : 0;
+
+    // Ignore sub-threshold jitter from a single finger so a tap stays a tap.
+    if (!dragged.current && pts.length < 2) {
+      const s = start.current;
+      if (s && Math.hypot(cx - s.x, cy - s.y) <= DRAG_THRESHOLD) return;
+    }
+    dragged.current = true;
+
     const g = gesture.current;
     if (!g) {
       rebaseline();
@@ -134,12 +136,13 @@ export default function App() {
 
   const endPointer = (e: React.PointerEvent) => {
     pointers.current.delete(e.pointerId);
-    // A tap (little movement, single pointer) on an event opens its details.
-    if (down.current && !down.current.moved && pointers.current.size === 0) {
-      if (down.current.eventId) setSelectedId(down.current.eventId);
-    }
-    if (pointers.current.size === 0) down.current = null;
+    if (pointers.current.size === 0) start.current = null;
     rebaseline();
+  };
+
+  // Opening an event's details — skipped if the gesture was a drag/pan.
+  const selectEvent = (id: string) => {
+    if (!dragged.current) setSelectedId(id);
   };
 
   const zoomButton = (factor: number) => {
@@ -212,6 +215,7 @@ export default function App() {
               view={view}
               width={size.width}
               height={size.height}
+              onSelect={selectEvent}
             />
           )}
 
@@ -276,15 +280,17 @@ function TimelineCanvas({
   view,
   width,
   height,
+  onSelect,
 }: {
   events: TimelineEvent[];
   view: ViewState;
   width: number;
   height: number;
+  onSelect: (id: string) => void;
 }) {
   const axisY = height * AXIS_FRAC;
   const ticks = computeTicks(width, view);
-  const placed = layoutEvents(events, view, width, CARD_W);
+  const placed = layoutEvents(events, view, width);
   const maxLanes = Math.max(1, Math.floor((axisY - 16) / LANE_H));
 
   const present = new Date().getFullYear();
@@ -328,7 +334,11 @@ function TimelineCanvas({
         const lane = p.lane % maxLanes;
         const cardBottom = axisY - 16 - lane * LANE_H;
         return (
-          <div key={p.event.id} data-event-id={p.event.id}>
+          <div
+            key={p.event.id}
+            data-event-id={p.event.id}
+            onClick={() => onSelect(p.event.id)}
+          >
             <div
               className="event-stem"
               style={{ left: p.x, top: cardBottom, height: axisY - cardBottom }}
@@ -336,7 +346,7 @@ function TimelineCanvas({
             <div className={`event-dot${p.event.starred ? " starred" : ""}`} style={{ left: p.x, top: axisY }} />
             <div
               className={`event-card${p.event.starred ? " starred" : ""}`}
-              style={{ left: p.x - CARD_W / 2, top: cardBottom - 48, width: CARD_W }}
+              style={{ left: p.x - p.width / 2, top: cardBottom - 48, width: p.width }}
             >
               <div className="event-title">
                 {p.event.starred && <span className="star">★</span>}

@@ -80,37 +80,83 @@ export interface PlacedEvent {
   event: TimelineEvent;
   x: number;
   lane: number;
+  width: number;
+}
+
+export const CARD_MIN_W = 74;
+export const CARD_MAX_W = 260;
+
+const TITLE_FONT =
+  '650 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+const YEAR_FONT =
+  '400 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+function getMeasureCtx(): CanvasRenderingContext2D | null {
+  if (measureCtx === undefined) {
+    measureCtx =
+      typeof document !== "undefined"
+        ? document.createElement("canvas").getContext("2d")
+        : null;
+  }
+  return measureCtx;
+}
+
+/**
+ * Width a card needs to show its title (and year) on one line, clamped between
+ * CARD_MIN_W and CARD_MAX_W. Sizes to content so short titles aren't truncated.
+ */
+export function estimateCardWidth(event: TimelineEvent): number {
+  const title = event.title || "(untitled)";
+  const year = formatYear(event.year);
+  const ctx = getMeasureCtx();
+  let titleW: number;
+  let yearW: number;
+  if (ctx) {
+    ctx.font = TITLE_FONT;
+    titleW = ctx.measureText(title).width + (event.starred ? 16 : 0);
+    ctx.font = YEAR_FONT;
+    yearW = ctx.measureText(year).width;
+  } else {
+    titleW = title.length * 7 + (event.starred ? 16 : 0);
+    yearW = year.length * 6;
+  }
+  const content = Math.max(titleW, yearW);
+  return Math.min(CARD_MAX_W, Math.max(CARD_MIN_W, Math.ceil(content) + 22));
 }
 
 /**
  * Assign events to stacked lanes so their cards don't overlap horizontally.
  * Events are sorted left-to-right; each is placed in the lowest lane whose
- * last card ends before this card would start.
+ * last card ends before this card would start. Each card is sized to its
+ * own content width.
  */
 export function layoutEvents(
   events: TimelineEvent[],
   view: ViewState,
   width: number,
-  cardWidth: number,
 ): PlacedEvent[] {
-  const margin = cardWidth + 40;
   const visible = events
-    .map((event) => ({ event, x: xOfYear(event.year, view) }))
-    .filter((p) => p.x > -margin && p.x < width + margin)
+    .map((event) => ({
+      event,
+      x: xOfYear(event.year, view),
+      w: estimateCardWidth(event),
+    }))
+    .filter((p) => p.x > -(p.w + 60) && p.x < width + (p.w + 60))
     .sort((a, b) => a.x - b.x);
 
   const laneEnds: number[] = []; // right edge (x) occupied per lane
   const gap = 8;
   const placed: PlacedEvent[] = [];
   for (const p of visible) {
-    const left = p.x - cardWidth / 2;
+    const left = p.x - p.w / 2;
     let lane = laneEnds.findIndex((end) => left > end + gap);
     if (lane === -1) {
       lane = laneEnds.length;
       laneEnds.push(0);
     }
-    laneEnds[lane] = p.x + cardWidth / 2;
-    placed.push({ event: p.event, x: p.x, lane });
+    laneEnds[lane] = p.x + p.w / 2;
+    placed.push({ event: p.event, x: p.x, lane, width: p.w });
   }
   return placed;
 }
