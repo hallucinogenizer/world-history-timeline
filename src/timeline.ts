@@ -14,11 +14,10 @@ export function clampScale(pxPerYear: number): number {
 // Importance levels
 // ---------------------------------------------------------------------------
 // An event's level says how long it stayed historically significant. A level
-// is shown only when its span is at least as coarse as the axis tick step
-// (niceStep) — i.e. when that unit is actually resolvable on the timeline.
-// So L2 (1 century) appears only once the axis is ticking at <= 100-year
-// intervals ("each century is visible"), L6 (1 year) only when years are
-// individually ticked, etc. This matches how the year labels themselves scale.
+// is shown only once its cadence (its span in years) occupies enough screen
+// space to be resolvable — see LEVEL_VISIBLE_PX / levelVisible. So L2 (1
+// century) appears only once a century spans a comfortable distance on screen,
+// L6 (1 year) only when a single year does, etc.
 export const LEVELS = [1, 2, 3, 4, 5, 6];
 export const DEFAULT_LEVEL = 4;
 
@@ -50,10 +49,17 @@ export const LEVEL_COLOR: Record<number, string> = {
   6: "#93a1b0",
 };
 
+// A level is shown once its cadence occupies at least this many pixels on
+// screen — i.e. that time unit is comfortably resolvable. This is deliberately
+// decoupled from the axis tick step so that denser year labels (see
+// TICK_TARGET_PX) don't pull minor events in early. 96px reproduces the tuning
+// from before the tick ladder was made denser.
+export const LEVEL_VISIBLE_PX = 96;
+
 /** Is an event of this importance level visible at the current zoom? */
 export function levelVisible(level: number, view: ViewState): boolean {
   const span = LEVEL_YEARS[level] ?? LEVEL_YEARS[DEFAULT_LEVEL];
-  return span >= niceStep(view);
+  return span * view.pxPerYear >= LEVEL_VISIBLE_PX;
 }
 
 /**
@@ -118,15 +124,21 @@ export function clampView(
   return { ...view, leftYear };
 }
 
-// Tick steps are aligned to the importance-level spans (1, 10, 25, 50, 100,
-// 1000) so the axis cadence always matches the finest visible level — when L4
-// (25 yr) events show, the axis ticks at 25. The extra steps (5, 500, …) only
-// refine bands where a single level is visible and are exact multiples of the
-// level spans, so a level's points always appear on the axis.
-const NICE_STEPS = [1, 5, 10, 25, 50, 100, 500, 1000, 5000, 10000, 50000];
+// Axis tick steps. A fairly dense ladder (~2–2.5x between rungs) so year
+// labels appear as soon as there's room to draw them, instead of jumping
+// straight from 5-year ticks to 1-year ticks and leaving a wide dead zone
+// where the axis is stuck at 5. The 25 / 250 / 2500 rungs are kept so the axis
+// still lands on the 25-year (L4) cadence when those events are the finest shown.
+const NICE_STEPS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000];
+
+// Aim for a label roughly every ~52px. Small enough that individual years
+// resolve while there's still plenty of space, and that even the widest sub-band
+// (~2.5x this) keeps several labels across the screen — never just two at the
+// far edges — without labels overlapping.
+export const TICK_TARGET_PX = 52;
 
 /** Choose a "nice" year interval so ticks land roughly every `targetPx` pixels. */
-export function niceStep(view: ViewState, targetPx = 96): number {
+export function niceStep(view: ViewState, targetPx = TICK_TARGET_PX): number {
   const rough = targetPx / view.pxPerYear;
   for (const step of NICE_STEPS) {
     if (step >= rough) return step;
@@ -160,7 +172,12 @@ export interface PlacedEvent {
 }
 
 export const CARD_MIN_W = 54;
-export const CARD_MAX_W = 190;
+export const CARD_MAX_W = 320;
+
+// Horizontal chrome a card adds around its text: border (1px each side) +
+// padding (7px each side) = 16px, plus a small slack so the last glyph never
+// clips into an ellipsis.
+const CARD_CHROME = 20;
 
 const TITLE_FONT =
   '650 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
@@ -199,14 +216,17 @@ export function estimateCardWidth(event: TimelineEvent): number {
     yearW = yearLine.length * 6;
   }
   const content = Math.max(titleW, yearW);
-  return Math.min(CARD_MAX_W, Math.max(CARD_MIN_W, Math.ceil(content) + 15));
+  return Math.min(CARD_MAX_W, Math.max(CARD_MIN_W, Math.ceil(content) + CARD_CHROME));
 }
 
 /**
- * Assign events to stacked lanes so their cards don't overlap horizontally.
- * Events are sorted left-to-right; each is placed in the lowest lane whose
- * last card ends before this card would start. Each card is sized to its
- * own content width.
+ * Assign events to stacked lanes above the axis. Vertical position encodes
+ * importance: the least-important visible level sits nearest the axis (lane 0)
+ * and the most-important floats highest, "overarching" the rest. Levels are
+ * processed from least to most important, and each level's cards are packed
+ * into as many sub-lanes as needed to avoid horizontal overlap, always placed
+ * strictly above the previous (less-important) level's lanes. Each card is
+ * sized to its own content width.
  */
 export function layoutEvents(
   events: TimelineEvent[],
@@ -219,21 +239,30 @@ export function layoutEvents(
       x: xOfYear(event.year, view),
       w: estimateCardWidth(event),
     }))
-    .filter((p) => p.x > -(p.w + 60) && p.x < width + (p.w + 60))
-    .sort((a, b) => a.x - b.x);
+    .filter((p) => p.x > -(p.w + 60) && p.x < width + (p.w + 60));
 
-  const laneEnds: number[] = []; // right edge (x) occupied per lane
   const gap = 8;
   const placed: PlacedEvent[] = [];
-  for (const p of visible) {
-    const left = p.x - p.w / 2;
-    let lane = laneEnds.findIndex((end) => left > end + gap);
-    if (lane === -1) {
-      lane = laneEnds.length;
-      laneEnds.push(0);
+  // Higher L number = less important = nearer the axis, so process levels in
+  // descending order and stack each above the last.
+  const levels = [...new Set(visible.map((p) => p.event.level))].sort((a, b) => b - a);
+  let laneFloor = 0;
+  for (const level of levels) {
+    const group = visible
+      .filter((p) => p.event.level === level)
+      .sort((a, b) => a.x - b.x);
+    const laneEnds: number[] = []; // right edge (x) occupied per sub-lane
+    for (const p of group) {
+      const left = p.x - p.w / 2;
+      let sub = laneEnds.findIndex((end) => left > end + gap);
+      if (sub === -1) {
+        sub = laneEnds.length;
+        laneEnds.push(0);
+      }
+      laneEnds[sub] = p.x + p.w / 2;
+      placed.push({ event: p.event, x: p.x, lane: laneFloor + sub, width: p.w });
     }
-    laneEnds[lane] = p.x + p.w / 2;
-    placed.push({ event: p.event, x: p.x, lane, width: p.w });
+    laneFloor += laneEnds.length;
   }
   return placed;
 }

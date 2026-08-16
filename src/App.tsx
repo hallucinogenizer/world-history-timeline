@@ -356,13 +356,6 @@ export default function App() {
               >
                 ⛶
               </button>
-              <button
-                className="btn btn-primary round wide"
-                onClick={openAdd}
-                aria-label="Add event"
-              >
-                + Event
-              </button>
             </div>
           )}
 
@@ -463,7 +456,9 @@ function TimelineCanvas({
 
       {/* events above the axis */}
       {placed.map((p) => {
-        const lane = p.lane % maxLanes;
+        // Clamp (not wrap) so the importance ordering is preserved even when
+        // more lanes are needed than fit; the topmost cards just share a lane.
+        const lane = Math.min(p.lane, maxLanes - 1);
         const cardBottom = axisY - AXIS_GAP - lane * LANE_H;
         return (
           <div

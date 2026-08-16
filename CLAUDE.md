@@ -61,10 +61,12 @@ gh release create vX.Y.Z "apk-share/WorldHistoryTimeline.apk#World History Timel
 
 - **Importance levels (L1–L6).** An event's level is *how long it stayed
   significant*: L1 = 1000 yr … L6 = 1 yr (`LEVEL_YEARS` in `timeline.ts`). A
-  level is visible only when its span ≥ the current axis tick step
-  (`levelVisible`). Tick steps (`NICE_STEPS`) are aligned to the level spans so
-  the axis cadence always matches the finest visible level (e.g. when L4 shows,
-  ticks are at 25 years). Zooming out drops the finer levels.
+  level is visible once its cadence occupies at least `LEVEL_VISIBLE_PX` (96px)
+  on screen (`levelVisible` = `span * pxPerYear >= 96`). This is **decoupled**
+  from the axis tick step: the tick ladder (`NICE_STEPS`, target
+  `TICK_TARGET_PX`) is denser so year labels appear as soon as there's room,
+  while level visibility stays on its own threshold so denser labels don't pull
+  minor events in early. Zooming out drops the finer levels.
 - **View clamp.** `clampView` stops horizontal scroll from going far past the
   present (right edge ≤ present + ~15% of the visible span, capped) or before
   `PAST_LIMIT_YEAR`. Every view mutation in `App.tsx` goes through `clamp(...)`.
