@@ -444,11 +444,17 @@ function TimelineCanvas({
         </div>
       )}
 
-      {/* year tick marks + labels below the axis */}
+      {/* year tick marks + labels below the axis; rounder years emphasized */}
       {ticks.map((t) => (
         <div key={`t${t.year}`}>
-          <div className="tick" style={{ left: t.x, top: axisY }} />
-          <div className="tick-label" style={{ left: t.x, top: axisY + 12 }}>
+          <div
+            className={t.major ? "tick major" : "tick"}
+            style={{ left: t.x, top: axisY }}
+          />
+          <div
+            className={t.major ? "tick-label major" : "tick-label"}
+            style={{ left: t.x, top: axisY + 12 }}
+          >
             {formatYearShort(t.year)}
           </div>
         </div>

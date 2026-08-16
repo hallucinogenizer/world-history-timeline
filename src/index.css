@@ -186,18 +186,29 @@ body {
 .tick {
   position: absolute;
   width: 1px;
-  height: 11px;
-  background: #7d8aa0;
+  height: 10px;
+  background: #4a5563;
   transform: translateX(-0.5px);
+}
+.tick.major {
+  width: 2px;
+  height: 18px;
+  background: #c3cede;
+  transform: translateX(-1px);
 }
 .tick-label {
   position: absolute;
   transform: translateX(-50%);
-  font-size: 15px;
-  font-weight: 650;
-  color: #d3dced;
+  font-size: 14px;
+  font-weight: 600;
+  color: #626d7d;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+.tick-label.major {
+  font-size: 18px;
+  font-weight: 800;
+  color: #ffffff;
 }
 
 .present {

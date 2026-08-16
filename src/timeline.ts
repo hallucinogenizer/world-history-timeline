@@ -149,16 +149,27 @@ export function niceStep(view: ViewState, targetPx = TICK_TARGET_PX): number {
 export interface Tick {
   year: number;
   x: number;
+  major: boolean; // lands on a rounder boundary → emphasized label
+}
+
+/**
+ * The coarser interval whose multiples get emphasized among the current ticks:
+ * one order of magnitude above the tick step. So at 1-year ticks the decades
+ * (…1890, 1900…) stand out, at 10-year ticks the centuries (…1900, 2000…) do.
+ */
+export function majorTickStep(step: number): number {
+  return Math.pow(10, Math.floor(Math.log10(step) + 1e-9) + 1);
 }
 
 /** Year gridline ticks covering the visible width (plus a small margin). */
 export function computeTicks(width: number, view: ViewState): Tick[] {
   const step = niceStep(view);
+  const major = majorTickStep(step);
   const startYear = Math.floor(yearOfX(-40, view) / step) * step;
   const endYear = yearOfX(width + 40, view);
   const ticks: Tick[] = [];
   for (let y = startYear; y <= endYear; y += step) {
-    ticks.push({ year: y, x: xOfYear(y, view) });
+    ticks.push({ year: y, x: xOfYear(y, view), major: y % major === 0 });
     if (ticks.length > 400) break; // safety valve
   }
   return ticks;
