@@ -2,6 +2,7 @@ import type { TimelineEvent, ViewState } from "./types";
 
 const EVENTS_KEY = "timeline.events.v1";
 const VIEW_KEY = "timeline.view.v1";
+const META_KEY = "timeline.meta.v1";
 
 export function loadEvents(): TimelineEvent[] {
   try {
@@ -19,7 +20,7 @@ export function loadEvents(): TimelineEvent[] {
         year: Number(e.year),
         month: e.month != null ? Number(e.month) : undefined,
         day: e.day != null ? Number(e.day) : undefined,
-        starred: Boolean(e.starred),
+        level: normalizeLevel(e),
       }));
   } catch {
     return [];
@@ -51,6 +52,34 @@ export function loadView(): ViewState | null {
 export function saveView(view: ViewState): void {
   try {
     localStorage.setItem(VIEW_KEY, JSON.stringify(view));
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Resolve an event's importance level, migrating the old boolean `starred`
+ * field: starred → L2 (still shown when zoomed out), unstarred → L5.
+ */
+function normalizeLevel(e: { level?: unknown; starred?: unknown }): number {
+  const lvl = Number(e.level);
+  if (Number.isInteger(lvl) && lvl >= 1 && lvl <= 6) return lvl;
+  return e.starred ? 2 : 5;
+}
+
+/** Last time the local event data changed (epoch ms) — used for sync. */
+export function loadUpdatedAt(): number {
+  try {
+    const meta = JSON.parse(localStorage.getItem(META_KEY) || "{}");
+    return Number(meta.updatedAt) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function saveUpdatedAt(updatedAt: number): void {
+  try {
+    localStorage.setItem(META_KEY, JSON.stringify({ updatedAt }));
   } catch {
     /* ignore */
   }

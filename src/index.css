@@ -80,15 +80,30 @@ body {
   font-weight: 600;
   cursor: pointer;
   user-select: none;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background 0.14s ease, border-color 0.14s ease,
+    box-shadow 0.14s ease, transform 0.05s ease;
+}
+.btn:hover {
+  background: #232c36;
 }
 .btn:active {
+  transform: translateY(1px);
   background: #131820;
 }
 .btn-primary {
-  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  background: var(--accent);
   border-color: transparent;
-  color: white;
+  color: #06131f;
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25),
+    0 6px 18px rgba(74, 163, 255, 0.28);
+}
+.btn-primary:hover {
+  background: #64b1ff;
+}
+.btn-primary:active {
+  background: var(--accent-2);
+  color: #eaf4ff;
 }
 .btn.danger {
   color: var(--danger);
@@ -207,10 +222,6 @@ body {
   transform: translate(-50%, -50%);
   box-shadow: 0 0 8px rgba(74, 163, 255, 0.7);
 }
-.event-dot.starred {
-  background: var(--star);
-  box-shadow: 0 0 8px rgba(255, 201, 74, 0.8);
-}
 .event-card {
   position: absolute;
   height: 46px;
@@ -221,9 +232,6 @@ body {
   overflow: hidden;
   cursor: pointer;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
-}
-.event-card.starred {
-  border-color: #5a4a1e;
 }
 .event-title {
   font-size: 12.5px;
@@ -240,9 +248,8 @@ body {
   margin-top: 3px;
   font-variant-numeric: tabular-nums;
 }
-.star {
-  color: var(--star);
-  margin-right: 3px;
+.event-year-lvl {
+  opacity: 0.5;
 }
 
 /* ---------- overlays ---------- */
@@ -251,13 +258,13 @@ body {
   top: 12px;
   left: 50%;
   transform: translateX(-50%);
-  background: rgba(255, 201, 74, 0.12);
-  border: 1px solid rgba(255, 201, 74, 0.4);
-  color: var(--star);
-  padding: 6px 12px;
+  background: rgba(15, 18, 22, 0.7);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  padding: 5px 11px;
   border-radius: 999px;
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 500;
   white-space: nowrap;
 }
 .span-label {
@@ -406,7 +413,29 @@ textarea {
   margin-bottom: 4px;
 }
 .detail-title {
-  margin: 0 0 10px;
+  margin: 0 0 8px;
+}
+.level-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  font-weight: 650;
+  padding: 4px 10px;
+  border: 1px solid;
+  border-radius: 999px;
+  margin-bottom: 12px;
+}
+.level-chip-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.hint {
+  font-size: 12px !important;
+  color: var(--muted);
+  font-weight: 400 !important;
+  line-height: 1.35;
 }
 .detail-desc {
   font-size: 15px;

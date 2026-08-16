@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Local secrets / build config — never commit
+.env
+.env.*
+!.env.example
+
 # Local APK staging (published via GitHub Releases instead)
 apk-share
 
@@ -25,3 +30,6 @@ apk-share
 *.njsproj
 *.sln
 *.sw?
+
+# Supabase CLI local state
+supabase/.temp/

@@ -1,0 +1,6 @@
+project_id = "jgfkjrrvjpjzktvwufdj"
+
+# The sync function authenticates with the publishable key (auth: 'publishable'),
+# not a user JWT, so the platform-level JWT check must be off.
+[functions.timeline]
+verify_jwt = false

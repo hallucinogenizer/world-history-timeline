@@ -47,6 +47,26 @@ The APK lands at `android/app/build/outputs/apk/debug/app-debug.apk`.
 npm run dev      # http://localhost:5173
 ```
 
+## Cloud backup / sync (Supabase)
+
+Events are stored locally, and (when configured) synced to Supabase so a fresh
+APK install restores your data. The app talks to a `timeline` Edge Function
+using the **publishable** key; the **secret** key stays server-side only.
+
+- Client config lives in `.env` (gitignored) — see `.env.example`. Only the
+  publishable key belongs there, plus your secret timeline UUID.
+- Backend: `supabase/functions/timeline/` (uses `@supabase/server`, `auth: 'publishable'`)
+  and `supabase/schema.sql` (a locked `private_timeline` table; RLS on, no policies).
+
+Deploy / re-deploy the function and (re)create the table:
+
+```bash
+# create the table (once) — run supabase/schema.sql in the SQL Editor, or via the Management API
+supabase functions deploy timeline --project-ref <ref> --no-verify-jwt
+```
+
+Sync is inert unless all three `VITE_SUPABASE_*` / `VITE_TIMELINE_ID` vars are set at build time.
+
 ## Install on the phone
 
 See the two methods below (Wi-Fi download or `adb install`).

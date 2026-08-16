@@ -1,14 +1,71 @@
 import type { TimelineEvent, ViewState } from "./types";
 
 // Zoom limits (pixels per year).
-export const MIN_PX_PER_YEAR = 0.02; // ~50 years per pixel — millennia in view
-export const MAX_PX_PER_YEAR = 60; // finest granularity is a single year
-
-// When the visible span exceeds this many years, only starred events are shown.
-export const STAR_ONLY_SPAN_YEARS = 200;
+export const MIN_PX_PER_YEAR = 0.04; // ~25 years per pixel — millennia in view
+export const MAX_PX_PER_YEAR = 100; // finest granularity is a single year
 
 export function clampScale(pxPerYear: number): number {
   return Math.min(MAX_PX_PER_YEAR, Math.max(MIN_PX_PER_YEAR, pxPerYear));
+}
+
+// ---------------------------------------------------------------------------
+// Importance levels
+// ---------------------------------------------------------------------------
+// An event's level says how long it stayed historically significant. A level
+// is shown while that span of years is not "crammed" on screen — i.e. it spans
+// at least CRAMP_PX pixels: LEVEL_YEARS[level] * pxPerYear >= CRAMP_PX.
+//
+// Tune CRAMP_PX / LEVEL_YEARS to move the cutoffs. With CRAMP_PX = 40 the
+// level transitions happen at pxPerYear = 40 (L6), 4 (L5), 1.6 (L4), 0.8 (L3),
+// 0.4 (L2), 0.04 (L1) — so at max zoom-out (0.04) L1 is still visible.
+export const CRAMP_PX = 40;
+
+export const LEVELS = [1, 2, 3, 4, 5, 6];
+export const DEFAULT_LEVEL = 4;
+
+export const LEVEL_YEARS: Record<number, number> = {
+  1: 1000,
+  2: 100,
+  3: 50,
+  4: 25,
+  5: 10,
+  6: 1,
+};
+
+export const LEVEL_SPAN_LABEL: Record<number, string> = {
+  1: "1000 years",
+  2: "1 century",
+  3: "50 years",
+  4: "25 years",
+  5: "10 years",
+  6: "1 year",
+};
+
+// Warm (important) → cool (minor) so weight reads at a glance.
+export const LEVEL_COLOR: Record<number, string> = {
+  1: "#ff6b6b",
+  2: "#ff9f45",
+  3: "#ffcf4a",
+  4: "#5fd0a0",
+  5: "#5aa6e6",
+  6: "#93a1b0",
+};
+
+/** Is an event of this importance level visible at the current zoom? */
+export function levelVisible(level: number, view: ViewState): boolean {
+  const span = LEVEL_YEARS[level] ?? LEVEL_YEARS[DEFAULT_LEVEL];
+  return span * view.pxPerYear >= CRAMP_PX;
+}
+
+/**
+ * The least-important level currently visible (largest L number that passes),
+ * or 0 if even L1 is hidden (extreme zoom-out).
+ */
+export function floorVisibleLevel(view: ViewState): number {
+  for (let l = 6; l >= 1; l--) {
+    if (levelVisible(l, view)) return l;
+  }
+  return 0;
 }
 
 export function xOfYear(year: number, view: ViewState): number {
@@ -22,10 +79,6 @@ export function yearOfX(x: number, view: ViewState): number {
 /** Visible span in years for a surface of the given pixel width. */
 export function visibleSpanYears(width: number, view: ViewState): number {
   return width / view.pxPerYear;
-}
-
-export function isStarOnly(width: number, view: ViewState): boolean {
-  return visibleSpanYears(width, view) > STAR_ONLY_SPAN_YEARS;
 }
 
 /**
@@ -112,14 +165,15 @@ export function estimateCardWidth(event: TimelineEvent): number {
   const ctx = getMeasureCtx();
   let titleW: number;
   let yearW: number;
+  const yearLine = `${year} · L4`; // year plus the muted level footnote
   if (ctx) {
     ctx.font = TITLE_FONT;
-    titleW = ctx.measureText(title).width + (event.starred ? 16 : 0);
+    titleW = ctx.measureText(title).width;
     ctx.font = YEAR_FONT;
-    yearW = ctx.measureText(year).width;
+    yearW = ctx.measureText(yearLine).width;
   } else {
-    titleW = title.length * 7 + (event.starred ? 16 : 0);
-    yearW = year.length * 6;
+    titleW = title.length * 7;
+    yearW = yearLine.length * 6;
   }
   const content = Math.max(titleW, yearW);
   return Math.min(CARD_MAX_W, Math.max(CARD_MIN_W, Math.ceil(content) + 22));
@@ -165,6 +219,23 @@ const MONTHS = [
   "January", "February", "March", "April", "May", "June",
   "July", "August", "September", "October", "November", "December",
 ];
+
+/**
+ * Parse a month from either a number (1-12) or a name prefix ("aug", "Aug",
+ * "August"). Returns { valid: true } with no month for empty input, a month
+ * number when it resolves, or { valid: false } when it can't.
+ */
+export function parseMonth(input: string): { month?: number; valid: boolean } {
+  const s = input.trim();
+  if (!s) return { valid: true };
+  if (/^\d+$/.test(s)) {
+    const n = parseInt(s, 10);
+    return n >= 1 && n <= 12 ? { month: n, valid: true } : { valid: false };
+  }
+  const lc = s.toLowerCase();
+  const idx = MONTHS.findIndex((m) => m.toLowerCase().startsWith(lc));
+  return idx >= 0 ? { month: idx + 1, valid: true } : { valid: false };
+}
 
 /** e.g. -500 => "500 BC", 1969 => "1969 AD", 0 => "1 BC". */
 export function formatYear(year: number): string {

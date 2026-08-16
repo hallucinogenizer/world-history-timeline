@@ -3,18 +3,27 @@ import type { TimelineEvent, ViewState } from "./types";
 import {
   cryptoId,
   loadEvents,
+  loadUpdatedAt,
   loadView,
   saveEvents,
+  saveUpdatedAt,
   saveView,
 } from "./storage";
+import { pullRemote, pushRemote, syncEnabled } from "./sync";
 import {
   computeTicks,
+  DEFAULT_LEVEL,
+  floorVisibleLevel,
   formatFullDate,
   formatYear,
   formatYearShort,
-  isStarOnly,
   layoutEvents,
+  levelVisible,
+  LEVEL_COLOR,
+  LEVEL_SPAN_LABEL,
+  LEVELS,
   panBy,
+  parseMonth,
   visibleSpanYears,
   xOfYear,
   zoomAround,
@@ -26,6 +35,7 @@ const DRAG_THRESHOLD = 6; // px of movement before a touch counts as a pan, not 
 
 export default function App() {
   const [events, setEvents] = useState<TimelineEvent[]>(() => loadEvents());
+  const [updatedAt, setUpdatedAt] = useState<number>(() => loadUpdatedAt());
   const [view, setView] = useState<ViewState | null>(() => loadView());
   const [size, setSize] = useState({ width: 0, height: 0 });
 
@@ -40,6 +50,15 @@ export default function App() {
   // True once the current gesture has moved far enough to be a pan/pinch.
   // Read by an event's onClick so a drag that ends on a card doesn't open it.
   const dragged = useRef(false);
+
+  // Sync bookkeeping (kept in refs to read fresh values inside async/timeout).
+  const eventsRef = useRef(events);
+  const updatedAtRef = useRef(updatedAt);
+  const lastPushed = useRef(0);
+  const pullDone = useRef(false);
+  const pushTimer = useRef<number | null>(null);
+  eventsRef.current = events;
+  updatedAtRef.current = updatedAt;
 
   // Measure the surface and react to orientation / window changes.
   useLayoutEffect(() => {
@@ -63,9 +82,62 @@ export default function App() {
   }, [view, size.width]);
 
   useEffect(() => saveEvents(events), [events]);
+  useEffect(() => saveUpdatedAt(updatedAt), [updatedAt]);
   useEffect(() => {
     if (view) saveView(view);
   }, [view]);
+
+  // Debounced push of the current snapshot to the remote store.
+  const schedulePush = useCallback(() => {
+    if (!syncEnabled) return;
+    if (pushTimer.current) clearTimeout(pushTimer.current);
+    pushTimer.current = window.setTimeout(async () => {
+      const snap = {
+        events: eventsRef.current,
+        updatedAt: updatedAtRef.current,
+      };
+      try {
+        await pushRemote(snap);
+        lastPushed.current = snap.updatedAt;
+      } catch {
+        /* offline — the next change (or next launch) will retry */
+      }
+    }, 1200);
+  }, []);
+
+  // On launch: pull the remote snapshot and reconcile with local (newest wins).
+  useEffect(() => {
+    if (!syncEnabled) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const remote = await pullRemote();
+        if (cancelled) return;
+        if (remote && remote.updatedAt > updatedAtRef.current) {
+          setEvents(remote.events);
+          setUpdatedAt(remote.updatedAt);
+          lastPushed.current = remote.updatedAt;
+        } else {
+          lastPushed.current = remote ? remote.updatedAt : 0;
+          if (updatedAtRef.current > lastPushed.current) schedulePush();
+        }
+      } catch {
+        /* offline — stay on local data */
+      } finally {
+        pullDone.current = true;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [schedulePush]);
+
+  // After a local change, push it up (once the initial pull has resolved).
+  useEffect(() => {
+    if (!syncEnabled || !pullDone.current) return;
+    if (updatedAt <= lastPushed.current) return;
+    schedulePush();
+  }, [events, updatedAt, schedulePush]);
 
   // Non-passive wheel handler so we can zoom (and prevent page scroll).
   useEffect(() => {
@@ -165,22 +237,21 @@ export default function App() {
       next[idx] = ev;
       return next;
     });
+    setUpdatedAt(Date.now());
   };
 
   const deleteEvent = (id: string) => {
     setEvents((prev) => prev.filter((p) => p.id !== id));
+    setUpdatedAt(Date.now());
     setSelectedId(null);
   };
 
-  const toggleStar = (id: string) => {
-    setEvents((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, starred: !p.starred } : p)),
-    );
-  };
-
   const selected = events.find((e) => e.id === selectedId) ?? null;
-  const starOnly = view ? isStarOnly(size.width, view) : false;
-  const shownEvents = starOnly ? events.filter((e) => e.starred) : events;
+  const shownEvents = view
+    ? events.filter((e) => levelVisible(e.level, view))
+    : [];
+  const hiddenCount = events.length - shownEvents.length;
+  const floor = view ? floorVisibleLevel(view) : 6;
 
   return (
     <div className="app">
@@ -229,8 +300,12 @@ export default function App() {
             </div>
           )}
 
-          {starOnly && (
-            <div className="badge">★ Zoomed out — showing starred events only</div>
+          {hiddenCount > 0 && (
+            <div className="badge">
+              {floor >= 1
+                ? `Showing events significant for ≥ ${LEVEL_SPAN_LABEL[floor]} · ${hiddenCount} hidden`
+                : `Zoom in to reveal events`}
+            </div>
           )}
 
           <div className="zoom-controls">
@@ -262,7 +337,6 @@ export default function App() {
         <EventDetail
           event={selected}
           onClose={() => setSelectedId(null)}
-          onToggleStar={() => toggleStar(selected.id)}
           onEdit={() => {
             setEditing(selected);
             setSelectedId(null);
@@ -343,16 +417,29 @@ function TimelineCanvas({
               className="event-stem"
               style={{ left: p.x, top: cardBottom, height: axisY - cardBottom }}
             />
-            <div className={`event-dot${p.event.starred ? " starred" : ""}`} style={{ left: p.x, top: axisY }} />
             <div
-              className={`event-card${p.event.starred ? " starred" : ""}`}
-              style={{ left: p.x - p.width / 2, top: cardBottom - 48, width: p.width }}
+              className="event-dot"
+              style={{
+                left: p.x,
+                top: axisY,
+                background: LEVEL_COLOR[p.event.level],
+                boxShadow: `0 0 8px ${LEVEL_COLOR[p.event.level]}cc`,
+              }}
+            />
+            <div
+              className="event-card"
+              style={{
+                left: p.x - p.width / 2,
+                top: cardBottom - 48,
+                width: p.width,
+                borderColor: `${LEVEL_COLOR[p.event.level]}66`,
+              }}
             >
-              <div className="event-title">
-                {p.event.starred && <span className="star">★</span>}
-                {p.event.title || "(untitled)"}
+              <div className="event-title">{p.event.title || "(untitled)"}</div>
+              <div className="event-year">
+                {formatYear(p.event.year)}
+                <span className="event-year-lvl"> · L{p.event.level}</span>
               </div>
-              <div className="event-year">{formatYear(p.event.year)}</div>
             </div>
           </div>
         );
@@ -388,7 +475,7 @@ function EventForm({
   );
   const [monthStr, setMonthStr] = useState(initial?.month ? String(initial.month) : "");
   const [dayStr, setDayStr] = useState(initial?.day ? String(initial.day) : "");
-  const [starred, setStarred] = useState(initial?.starred ?? false);
+  const [level, setLevel] = useState<number>(initial?.level ?? DEFAULT_LEVEL);
   const [error, setError] = useState("");
 
   const submit = () => {
@@ -397,9 +484,10 @@ function EventForm({
     if (!Number.isFinite(yearAbs) || yearAbs < 0) return setError("Please enter a valid year.");
     const year = era === "BC" ? -yearAbs : yearAbs;
 
-    const month = monthStr ? parseInt(monthStr, 10) : undefined;
-    if (month !== undefined && (month < 1 || month > 12))
-      return setError("Month must be between 1 and 12.");
+    const parsedMonth = parseMonth(monthStr);
+    if (!parsedMonth.valid)
+      return setError('Month must be 1–12 or a name like "Aug".');
+    const month = parsedMonth.month;
     const day = dayStr ? parseInt(dayStr, 10) : undefined;
     if (day !== undefined && (day < 1 || day > 31))
       return setError("Day must be between 1 and 31.");
@@ -413,7 +501,7 @@ function EventForm({
       year,
       month,
       day,
-      starred,
+      level,
     });
   };
 
@@ -467,13 +555,10 @@ function EventForm({
           <label className="field grow">
             <span>Month (optional)</span>
             <input
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={12}
+              type="text"
               value={monthStr}
               onChange={(e) => setMonthStr(e.target.value)}
-              placeholder="—"
+              placeholder="e.g. 8 or Aug"
             />
           </label>
           <label className="field grow">
@@ -490,13 +575,19 @@ function EventForm({
           </label>
         </div>
 
-        <label className="field-check">
-          <input
-            type="checkbox"
-            checked={starred}
-            onChange={(e) => setStarred(e.target.checked)}
-          />
-          <span>★ Star this event (stays visible when zoomed out)</span>
+        <label className="field">
+          <span>Importance — how long it stayed significant</span>
+          <select value={level} onChange={(e) => setLevel(Number(e.target.value))}>
+            {LEVELS.map((l) => (
+              <option key={l} value={l}>
+                L{l} — significant for {LEVEL_SPAN_LABEL[l]}
+              </option>
+            ))}
+          </select>
+          <span className="hint">
+            More significant events (L1–L2) stay visible when you zoom out;
+            minor ones (L5–L6) appear only as you zoom in.
+          </span>
         </label>
 
         {error && <div className="error">{error}</div>}
@@ -517,13 +608,11 @@ function EventForm({
 function EventDetail({
   event,
   onClose,
-  onToggleStar,
   onEdit,
   onDelete,
 }: {
   event: TimelineEvent;
   onClose: () => void;
-  onToggleStar: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
@@ -531,10 +620,17 @@ function EventDetail({
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="detail-date">{formatFullDate(event)}</div>
-        <h2 className="detail-title">
-          {event.starred && <span className="star">★</span>}
-          {event.title || "(untitled)"}
-        </h2>
+        <h2 className="detail-title">{event.title || "(untitled)"}</h2>
+        <div
+          className="level-chip"
+          style={{
+            color: LEVEL_COLOR[event.level],
+            borderColor: `${LEVEL_COLOR[event.level]}66`,
+          }}
+        >
+          <span className="level-chip-dot" style={{ background: LEVEL_COLOR[event.level] }} />
+          L{event.level} · significant for {LEVEL_SPAN_LABEL[event.level]}
+        </div>
         {event.description ? (
           <p className="detail-desc">{event.description}</p>
         ) : (
@@ -546,9 +642,6 @@ function EventDetail({
             Delete
           </button>
           <div className="spacer" />
-          <button className="btn" onClick={onToggleStar}>
-            {event.starred ? "Unstar" : "★ Star"}
-          </button>
           <button className="btn" onClick={onEdit}>
             Edit
           </button>

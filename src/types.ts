@@ -8,7 +8,12 @@ export interface TimelineEvent {
   month?: number;
   /** Optional day 1-31. Only meaningful when month is set. */
   day?: number;
-  starred: boolean;
+  /**
+   * Importance level 1-6, expressed as how long the event stayed significant.
+   * L1 = 1000 years (most important, visible even when zoomed far out) …
+   * L6 = 1 year (least important, visible only at year-level zoom).
+   */
+  level: number;
 }
 
 export interface ViewState {
