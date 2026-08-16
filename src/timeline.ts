@@ -153,12 +153,18 @@ export interface Tick {
 }
 
 /**
- * The coarser interval whose multiples get emphasized among the current ticks:
- * one order of magnitude above the tick step. So at 1-year ticks the decades
- * (…1890, 1900…) stand out, at 10-year ticks the centuries (…1900, 2000…) do.
+ * The coarser interval whose multiples get emphasized among the current ticks.
+ * It's the smallest power of ten strictly above `step` that leaves at least
+ * MIN_MAJOR_RATIO minor ticks between emphasized ones — otherwise every other
+ * (5-year ticks) or every third label would be highlighted, which reads as two
+ * alternating styles rather than as a milestone. So at 1-year ticks decades
+ * pop, at 5- and 10-year ticks centuries pop, etc.
  */
 export function majorTickStep(step: number): number {
-  return Math.pow(10, Math.floor(Math.log10(step) + 1e-9) + 1);
+  const MIN_MAJOR_RATIO = 4;
+  let major = 10;
+  while (major <= step || major / step < MIN_MAJOR_RATIO) major *= 10;
+  return major;
 }
 
 /** Year gridline ticks covering the visible width (plus a small margin). */
