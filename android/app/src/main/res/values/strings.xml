@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">World History Timeline</string>
+    <string name="title_activity_main">World History Timeline</string>
+    <string name="package_name">com.rohan.timeline</string>
+    <string name="custom_url_scheme">com.rohan.timeline</string>
+</resources>
