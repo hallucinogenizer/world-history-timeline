@@ -1,6 +1,17 @@
 import type { Settings, TimelineEvent, ViewState } from "./types";
 
-const DEFAULT_SETTINGS: Settings = { orientation: "horizontal" };
+const DEFAULT_SETTINGS: Settings = {
+  orientation: "horizontal",
+  inertiaEnabled: true,
+  inertiaGlide: 5,
+  inertiaForce: 5,
+};
+
+/** Clamp a stored 1-10 dial back into range, falling back to the default. */
+function dial(value: unknown, fallback: number): number {
+  const n = Math.round(Number(value));
+  return Number.isFinite(n) ? Math.min(10, Math.max(1, n)) : fallback;
+}
 
 const EVENTS_KEY = "timeline.events.v1";
 const VIEW_KEY = "timeline.view.v1";
@@ -72,6 +83,9 @@ export function loadSettings(): Settings {
         orientation === "vertical" || orientation === "auto"
           ? orientation
           : "horizontal",
+      inertiaEnabled: s?.inertiaEnabled !== false,
+      inertiaGlide: dial(s?.inertiaGlide, DEFAULT_SETTINGS.inertiaGlide),
+      inertiaForce: dial(s?.inertiaForce, DEFAULT_SETTINGS.inertiaForce),
     };
   } catch {
     return DEFAULT_SETTINGS;

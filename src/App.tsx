@@ -44,14 +44,25 @@ const DRAG_THRESHOLD = 6; // px of movement before a touch counts as a pan, not 
 
 // Flick-to-glide. Velocity is tracked in pixels per millisecond along the time
 // axis, smoothed over the last few pointer samples so one jittery frame can't
-// throw the throw. On release the glide decays exponentially with FLING_TAU as
-// its time constant, which lands it around v0 * FLING_TAU pixels away.
-const FLING_MIN_V = 0.08; // below this, a release is a stop rather than a flick
+// throw the throw. On release the glide decays exponentially with `tau` as its
+// time constant, which lands it around v0 * tau pixels away.
 const FLING_MAX_V = 4; // cap so a wild flick can't launch the view into orbit
-const FLING_TAU = 340; // ms
 const FLING_STOP_V = 0.015; // end the glide once it's slower than ~1px/frame
 const FLING_IDLE_MS = 80; // a finger that paused before lifting doesn't throw
 const VELOCITY_SMOOTH = 0.35; // weight of the newest sample in the average
+
+// The two Settings dials, each 1-10, mapped onto the numbers the glide runs on.
+// Both are tuned so 5 — the default — reproduces the feel they replaced.
+
+/** Decay time constant in ms: how far a flick carries. */
+export function flingTau(glide: number): number {
+  return 100 + (glide - 1) * 60; // 100ms … 640ms
+}
+
+/** Velocity in px/ms a release must beat to count as a flick, not a stop. */
+export function flingMinVelocity(force: number): number {
+  return 0.02 + (force - 1) * 0.015; // a nudge … a shove
+}
 
 // Vertical mode: a fixed gutter left of the axis holds the year labels, and
 // event cards sit in columns to its right — one wide column on a phone, more
@@ -91,6 +102,8 @@ export default function App() {
   // Flick tracking: smoothed velocity along the time axis, when it was last
   // sampled, and the handle of the glide currently animating (if any).
   const velocity = useRef(0);
+  // The glide's settings, in a ref so the animation callbacks stay stable.
+  const fling = useRef({ enabled: true, tau: 0, minV: 0 });
   const lastSample = useRef(0);
   const glide = useRef<number | null>(null);
 
@@ -104,6 +117,12 @@ export default function App() {
   updatedAtRef.current = updatedAt;
 
   // "auto" follows the device: portrait reads vertically, landscape across.
+  fling.current = {
+    enabled: settings.inertiaEnabled,
+    tau: flingTau(settings.inertiaGlide),
+    minV: flingMinVelocity(settings.inertiaForce),
+  };
+
   const vertical =
     settings.orientation === "auto"
       ? size.height > size.width
@@ -151,7 +170,7 @@ export default function App() {
       const stalled = next.leftYear === current.leftYear;
       current = next;
       setView(next);
-      velocity.current *= Math.exp(-dt / FLING_TAU);
+      velocity.current *= Math.exp(-dt / fling.current.tau);
       if (stalled || Math.abs(velocity.current) < FLING_STOP_V) {
         glide.current = null;
         return;
@@ -369,10 +388,11 @@ export default function App() {
     start.current = null;
     const idle = performance.now() - lastSample.current;
     if (
+      fling.current.enabled &&
       released &&
       dragged.current &&
       idle < FLING_IDLE_MS &&
-      Math.abs(velocity.current) > FLING_MIN_V
+      Math.abs(velocity.current) > fling.current.minV
     ) {
       velocity.current = Math.max(-FLING_MAX_V, Math.min(FLING_MAX_V, velocity.current));
       startGlide();
@@ -466,8 +486,8 @@ export default function App() {
         } hidden`
       : `Zoom in to reveal events`;
 
-  const setOrientation = (orientation: Orientation) =>
-    setSettings((s) => ({ ...s, orientation }));
+  const updateSettings = (patch: Partial<Settings>) =>
+    setSettings((s) => ({ ...s, ...patch }));
 
   const openAdd = () => {
     setEditing(null);
@@ -640,7 +660,7 @@ export default function App() {
       {settingsOpen && (
         <SettingsModal
           settings={settings}
-          onOrientation={setOrientation}
+          onChange={updateSettings}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -898,13 +918,24 @@ function SearchModal({
   );
 }
 
+function describeSpan(years: number): string {
+  const y = Math.round(years);
+  if (y >= 2000) return `Viewing ~${(y / 1000).toFixed(1)}k years`;
+  return `Viewing ~${y} years`;
+}
+
+/** Word for where a 1-10 dial currently sits. */
+function dialLabel(value: number, words: [string, string, string]): string {
+  return value <= 3 ? words[0] : value <= 7 ? words[1] : words[2];
+}
+
 function SettingsModal({
   settings,
-  onOrientation,
+  onChange,
   onClose,
 }: {
   settings: Settings;
-  onOrientation: (o: Orientation) => void;
+  onChange: (patch: Partial<Settings>) => void;
   onClose: () => void;
 }) {
   const options: { value: Orientation; label: string; hint: string }[] = [
@@ -912,6 +943,8 @@ function SettingsModal({
     { value: "horizontal", label: "Horizontal", hint: "Time runs left → right" },
     { value: "vertical", label: "Vertical", hint: "Time runs top → bottom" },
   ];
+  const { inertiaEnabled } = settings;
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -926,7 +959,7 @@ function SettingsModal({
                 className={
                   settings.orientation === o.value ? "choice selected" : "choice"
                 }
-                onClick={() => onOrientation(o.value)}
+                onClick={() => onChange({ orientation: o.value })}
                 aria-pressed={settings.orientation === o.value}
               >
                 <span className="choice-label">{o.label}</span>
@@ -934,6 +967,35 @@ function SettingsModal({
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="field">
+          <span>Scrolling</span>
+          <label className="field-check">
+            <input
+              type="checkbox"
+              checked={inertiaEnabled}
+              onChange={(e) => onChange({ inertiaEnabled: e.target.checked })}
+            />
+            Keep coasting after a flick
+          </label>
+
+          <Dial
+            label="How far it glides"
+            value={settings.inertiaGlide}
+            reading={dialLabel(settings.inertiaGlide, ["Short", "Medium", "Long"])}
+            ends={["Short", "Long"]}
+            disabled={!inertiaEnabled}
+            onChange={(inertiaGlide) => onChange({ inertiaGlide })}
+          />
+          <Dial
+            label="Flick needed to set it off"
+            value={settings.inertiaForce}
+            reading={dialLabel(settings.inertiaForce, ["Light", "Medium", "Firm"])}
+            ends={["Light", "Firm"]}
+            disabled={!inertiaEnabled}
+            onChange={(inertiaForce) => onChange({ inertiaForce })}
+          />
         </div>
 
         <div className="modal-actions">
@@ -946,10 +1008,43 @@ function SettingsModal({
   );
 }
 
-function describeSpan(years: number): string {
-  const y = Math.round(years);
-  if (y >= 2000) return `Viewing ~${(y / 1000).toFixed(1)}k years`;
-  return `Viewing ~${y} years`;
+function Dial({
+  label,
+  value,
+  reading,
+  ends,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  reading: string;
+  ends: [string, string];
+  disabled: boolean;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className={disabled ? "dial disabled" : "dial"}>
+      <div className="dial-head">
+        <span className="dial-label">{label}</span>
+        <span className="dial-reading">{reading}</span>
+      </div>
+      <input
+        className="slider"
+        type="range"
+        min={1}
+        max={10}
+        step={1}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <div className="dial-ends">
+        <span>{ends[0]}</span>
+        <span>{ends[1]}</span>
+      </div>
+    </div>
+  );
 }
 
 function EventForm({

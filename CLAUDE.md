@@ -73,7 +73,8 @@ gh release create vX.Y.Z "apk-share/WorldHistoryTimeline.apk#World History Timel
 - **Orientation.** Settings (gear in the top bar) switches between auto,
   horizontal (time left → right) and vertical (time top → bottom); auto picks
   vertical whenever the surface is taller than it is wide, so rotating the
-  phone flips it. The choice is local-only
+  phone flips it. Settings also holds the scroll-inertia dials. The choices are
+  local-only
   (`timeline.settings.v1`), not part of the synced snapshot. Internally there's
   one time axis: `posOfYear` / `yearAtPos` / `clampView` all work in "pixels
   along the axis" (`mainSpan` = width horizontally, height vertically), and
@@ -99,8 +100,12 @@ gh release create vX.Y.Z "apk-share/WorldHistoryTimeline.apk#World History Timel
 - **Pan/zoom** is custom pointer handling (no library); a `dragged` ref
   distinguishes a tap (opens details) from a drag/pinch. A flick coasts: pointer
   moves feed a smoothed velocity (px/ms along the time axis), and on release a
-  rAF loop pans with exponential decay (`FLING_*` in `App.tsx`) until it's slow
-  enough to stop or the view clamp stalls it. Anything that moves the view
+  rAF loop pans with exponential decay until it's slow enough to stop or the
+  view clamp stalls it. Settings exposes the glide as two 1-10 dials plus an
+  on/off — `flingTau` (decay time constant: how far it carries) and
+  `flingMinVelocity` (the release speed that counts as a flick) in `App.tsx`
+  map them onto the numbers the loop runs on, both tuned so 5 reproduces the
+  original feel. Anything that moves the view
   (touch, wheel, zoom buttons, Now, a search jump) cancels the glide first, and
   the tap that catches a moving timeline only stops it — it doesn't open a card.
 - **Sync/security.** The app authenticates to the Edge Function with the
