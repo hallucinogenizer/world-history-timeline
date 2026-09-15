@@ -101,11 +101,20 @@ gh release create vX.Y.Z "apk-share/WorldHistoryTimeline.apk#World History Timel
   distinguishes a tap (opens details) from a drag/pinch. A flick coasts: pointer
   moves feed a smoothed velocity (px/ms along the time axis), and on release a
   rAF loop pans with exponential decay until it's slow enough to stop or the
-  view clamp stalls it. Settings exposes the glide as two 1-10 dials plus an
-  on/off — `flingTau` (decay time constant: how far it carries) and
-  `flingMinVelocity` (the release speed that counts as a flick) in `App.tsx`
-  map them onto the numbers the loop runs on, both tuned so 5 reproduces the
-  original feel. Anything that moves the view
+  view clamp stalls it. Release speed is the *average over the last 120ms of
+  position samples*, not a running average of per-frame speeds: a real flick is
+  only a few samples long and usually eases off as the finger leaves the glass,
+  both of which drag a running average ~20% below the speed the flick had. The
+  surface takes pointer capture once a gesture is confirmed a drag — never for
+  taps, since capture would retarget their click away from the card.
+- **Inertia settings.** Two 1-10 dials plus an on/off, both dials wired so
+  turning them up makes the scroll livelier: `flingTau` (decay time constant —
+  how far it carries, 100ms…1s) and `flingMinVelocity` (the release speed that
+  counts as a flick — *inverted* against its dial, so higher = catches more
+  easily). Settings also shows what the last release measured and how far it
+  glided, which is the only way to tell on the device whether a flick was too
+  gentle, glided, or stalled against the view clamp — flicking toward the
+  present stalls immediately, since the default view already sits at that edge. Anything that moves the view
   (touch, wheel, zoom buttons, Now, a search jump) cancels the glide first, and
   the tap that catches a moving timeline only stops it — it doesn't open a card.
 - **Sync/security.** The app authenticates to the Edge Function with the
