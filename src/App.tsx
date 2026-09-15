@@ -42,26 +42,40 @@ const AXIS_GAP = 10; // gap between the axis and the nearest card lane
 const AXIS_FRAC = 0.7; // axis position as a fraction of the cross-axis size
 const DRAG_THRESHOLD = 6; // px of movement before a touch counts as a pan, not a tap
 
-// Flick-to-glide. Velocity is tracked in pixels per millisecond along the time
-// axis, smoothed over the last few pointer samples so one jittery frame can't
-// throw the throw. On release the glide decays exponentially with `tau` as its
-// time constant, which lands it around v0 * tau pixels away.
-const FLING_MAX_V = 4; // cap so a wild flick can't launch the view into orbit
+// Flick-to-glide. Release speed is measured as the average over the tail of the
+// gesture (VELOCITY_WINDOW_MS of position samples) rather than a running
+// average of each frame's speed: a real flick is only a handful of samples long
+// and often eases off as the finger leaves the glass, both of which drag a
+// running average well below the speed the flick actually had. On release the
+// glide decays exponentially with `tau` as its time constant, which lands it
+// around v0 * tau pixels away.
+const FLING_MAX_V = 6; // cap so a wild flick can't launch the view into orbit
 const FLING_STOP_V = 0.015; // end the glide once it's slower than ~1px/frame
 const FLING_IDLE_MS = 80; // a finger that paused before lifting doesn't throw
-const VELOCITY_SMOOTH = 0.35; // weight of the newest sample in the average
+const VELOCITY_WINDOW_MS = 120; // tail of the gesture the speed is measured over
+const VELOCITY_MIN_SPAN_MS = 10; // too brief a tail to measure honestly
 
 // The two Settings dials, each 1-10, mapped onto the numbers the glide runs on.
-// Both are tuned so 5 — the default — reproduces the feel they replaced.
+// Both read the same way round: turning a dial up makes the scroll livelier.
 
 /** Decay time constant in ms: how far a flick carries. */
 export function flingTau(glide: number): number {
-  return 100 + (glide - 1) * 60; // 100ms … 640ms
+  return 100 + (glide - 1) * 100; // 100ms … 1s
 }
 
-/** Velocity in px/ms a release must beat to count as a flick, not a stop. */
-export function flingMinVelocity(force: number): number {
-  return 0.02 + (force - 1) * 0.015; // a nudge … a shove
+/**
+ * Velocity in px/ms a release must beat to count as a flick rather than a stop.
+ * Inverted against the dial: turn it up and less of a flick will catch.
+ */
+export function flingMinVelocity(catchDial: number): number {
+  return 0.012 + (10 - catchDial) * 0.012; // a shove … a feather
+}
+
+/** What the last release did, so Settings can show the glide working. */
+interface Flick {
+  velocity: number; // px/ms along the time axis
+  distance: number; // px the glide actually travelled
+  note: "glided" | "stopped at the end of the timeline" | "too gentle to glide" | "coasting is off";
 }
 
 // Vertical mode: a fixed gutter left of the axis holds the year labels, and
@@ -86,6 +100,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [lastFlick, setLastFlick] = useState<Flick | null>(null);
   // Temporary override: show every event regardless of the zoom-level filter.
   // Deliberately not persisted — it's a peek, not a preference.
   const [showAll, setShowAll] = useState(false);
@@ -99,13 +114,13 @@ export default function App() {
   // True once the current gesture has moved far enough to be a pan/pinch.
   // Read by an event's onClick so a drag that ends on a card doesn't open it.
   const dragged = useRef(false);
-  // Flick tracking: smoothed velocity along the time axis, when it was last
-  // sampled, and the handle of the glide currently animating (if any).
+  // Flick tracking: recent positions along the time axis, the release speed
+  // derived from them, and the handle of the glide currently animating.
+  const samples = useRef<{ t: number; pos: number }[]>([]);
   const velocity = useRef(0);
+  const glide = useRef<number | null>(null);
   // The glide's settings, in a ref so the animation callbacks stay stable.
   const fling = useRef({ enabled: true, tau: 0, minV: 0 });
-  const lastSample = useRef(0);
-  const glide = useRef<number | null>(null);
 
   // Sync bookkeeping (kept in refs to read fresh values inside async/timeout).
   const eventsRef = useRef(events);
@@ -161,24 +176,33 @@ export default function App() {
   const startGlide = useCallback(() => {
     const from = viewRef.current;
     if (!from) return;
+    stopGlide();
+    const launch = velocity.current;
     let current = from;
+    let travelled = 0;
     let last = performance.now();
     const step = (now: number) => {
       const dt = Math.min(now - last, 64); // a backgrounded tab shouldn't lurch
       last = now;
       const next = clamp(panBy(current, velocity.current * dt));
       const stalled = next.leftYear === current.leftYear;
+      travelled += Math.abs(next.leftYear - current.leftYear) * next.pxPerYear;
       current = next;
       setView(next);
       velocity.current *= Math.exp(-dt / fling.current.tau);
       if (stalled || Math.abs(velocity.current) < FLING_STOP_V) {
         glide.current = null;
+        setLastFlick({
+          velocity: launch,
+          distance: travelled,
+          note: stalled ? "stopped at the end of the timeline" : "glided",
+        });
         return;
       }
       glide.current = requestAnimationFrame(step);
     };
     glide.current = requestAnimationFrame(step);
-  }, [clamp]);
+  }, [clamp, stopGlide]);
 
   useEffect(() => () => {
     stopGlide();
@@ -318,6 +342,31 @@ export default function App() {
     gesture.current = { center: g.center, dist: g.dist };
   }, []);
 
+  /** Remember where the gesture is now, keeping only the recent tail. */
+  const trackSample = (pos: number) => {
+    const t = performance.now();
+    const s = samples.current;
+    s.push({ t, pos });
+    // Anything older than the window goes — so a finger that rests mid-drag
+    // leaves a single sample behind and releases with no measurable speed.
+    while (s.length > 1 && t - s[0].t > VELOCITY_WINDOW_MS) s.shift();
+  };
+
+  const resetSamples = (pos?: number) => {
+    samples.current = pos === undefined ? [] : [{ t: performance.now(), pos }];
+  };
+
+  /** Speed at release, averaged over the tail of the gesture (px/ms). */
+  const releaseVelocity = () => {
+    const s = samples.current;
+    if (s.length < 2) return 0;
+    const newest = s[s.length - 1];
+    if (performance.now() - newest.t > FLING_IDLE_MS) return 0;
+    const span = newest.t - s[0].t;
+    if (span < VELOCITY_MIN_SPAN_MS) return 0;
+    return (newest.pos - s[0].pos) / span;
+  };
+
   const rel = (e: React.PointerEvent) => {
     const rect = surfaceRef.current!.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -336,8 +385,8 @@ export default function App() {
       start.current = p;
     }
     velocity.current = 0;
-    lastSample.current = performance.now();
     rebaseline();
+    resetSamples(gesture.current?.center);
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -353,7 +402,18 @@ export default function App() {
       if (s && Math.hypot(center - s.main, crossCenter - s.cross) <= DRAG_THRESHOLD)
         return;
     }
-    dragged.current = true;
+    if (!dragged.current) {
+      dragged.current = true;
+      // Own the gesture from here on, so a flick that strays off the surface
+      // (or over the floating controls) still delivers its moves and its
+      // release. Capture is deliberately not taken for taps: it would retarget
+      // their click away from the card underneath.
+      try {
+        surfaceRef.current?.setPointerCapture(e.pointerId);
+      } catch {
+        /* capture is a nicety — carry on without it */
+      }
+    }
 
     const g = gesture.current;
     if (!g) {
@@ -364,15 +424,7 @@ export default function App() {
     const factor = pts.length >= 2 && g.dist > 0 && dist > 0 ? dist / g.dist : 1;
     setView((v) => (v ? clamp(panBy(zoomAround(v, center, factor), dCenter)) : v));
     gesture.current = { center, dist };
-
-    const now = performance.now();
-    const dt = now - lastSample.current;
-    lastSample.current = now;
-    // A long gap means the finger was resting, so the throw starts over.
-    velocity.current =
-      dt > 0 && dt < 120
-        ? velocity.current * (1 - VELOCITY_SMOOTH) + (dCenter / dt) * VELOCITY_SMOOTH
-        : 0;
+    trackSample(center);
   };
 
   const endPointer = (e: React.PointerEvent, released: boolean) => {
@@ -382,21 +434,26 @@ export default function App() {
       // Lifting one finger of a pinch re-centres the gesture; that jump isn't
       // a throw, so start measuring again from here.
       velocity.current = 0;
-      lastSample.current = performance.now();
+      resetSamples(gesture.current?.center);
       return;
     }
     start.current = null;
-    const idle = performance.now() - lastSample.current;
-    if (
-      fling.current.enabled &&
-      released &&
-      dragged.current &&
-      idle < FLING_IDLE_MS &&
-      Math.abs(velocity.current) > fling.current.minV
-    ) {
-      velocity.current = Math.max(-FLING_MAX_V, Math.min(FLING_MAX_V, velocity.current));
-      startGlide();
+    const speed = releaseVelocity();
+    resetSamples();
+    if (!released || !dragged.current) return;
+
+    if (!fling.current.enabled) {
+      setLastFlick({ velocity: speed, distance: 0, note: "coasting is off" });
+      return;
     }
+    if (Math.abs(speed) <= fling.current.minV) {
+      setLastFlick({ velocity: speed, distance: 0, note: "too gentle to glide" });
+      return;
+    }
+    velocity.current = Math.max(-FLING_MAX_V, Math.min(FLING_MAX_V, speed));
+    // Report the launch straight away; the glide fills in how far it got.
+    setLastFlick({ velocity: velocity.current, distance: 0, note: "glided" });
+    startGlide();
   };
 
   // Opening an event's details — skipped if the gesture was a drag/pan.
@@ -660,6 +717,7 @@ export default function App() {
       {settingsOpen && (
         <SettingsModal
           settings={settings}
+          lastFlick={lastFlick}
           onChange={updateSettings}
           onClose={() => setSettingsOpen(false)}
         />
@@ -931,10 +989,12 @@ function dialLabel(value: number, words: [string, string, string]): string {
 
 function SettingsModal({
   settings,
+  lastFlick,
   onChange,
   onClose,
 }: {
   settings: Settings;
+  lastFlick: Flick | null;
   onChange: (patch: Partial<Settings>) => void;
   onClose: () => void;
 }) {
@@ -989,13 +1049,29 @@ function SettingsModal({
             onChange={(inertiaGlide) => onChange({ inertiaGlide })}
           />
           <Dial
-            label="Flick needed to set it off"
+            label="How easily a flick catches"
             value={settings.inertiaForce}
-            reading={dialLabel(settings.inertiaForce, ["Light", "Medium", "Firm"])}
-            ends={["Light", "Firm"]}
+            reading={dialLabel(settings.inertiaForce, ["Firm", "Medium", "Light"])}
+            ends={["Needs a shove", "Feather touch"]}
             disabled={!inertiaEnabled}
             onChange={(inertiaForce) => onChange({ inertiaForce })}
           />
+
+          {/* Flick the timeline with this panel open and the numbers move —
+              so "is it even working?" has an answer on the device itself. */}
+          <div className="readout">
+            {lastFlick ? (
+              <>
+                Last flick <b>{Math.abs(lastFlick.velocity).toFixed(2)} px/ms</b>
+                {" · "}
+                {lastFlick.distance > 0
+                  ? `${lastFlick.note} ${Math.round(lastFlick.distance)} px`
+                  : lastFlick.note}
+              </>
+            ) : (
+              "Flick the timeline to see what it measured."
+            )}
+          </div>
         </div>
 
         <div className="modal-actions">

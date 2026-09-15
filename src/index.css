@@ -563,8 +563,23 @@ body {
 .dial-ends {
   display: flex;
   justify-content: space-between;
+  gap: 12px;
   font-size: 11px;
   color: var(--muted);
+}
+
+.readout {
+  margin-top: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.18);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.readout b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- modals ---------- */
