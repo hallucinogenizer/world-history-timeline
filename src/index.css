@@ -125,6 +125,16 @@ body {
   line-height: 1;
   border-radius: 12px;
 }
+.btn .icon {
+  width: 21px;
+  height: 21px;
+  display: block;
+  margin: auto;
+}
+.btn .icon.sm {
+  width: 17px;
+  height: 17px;
+}
 .btn.round.wide {
   width: auto;
   padding: 0 14px;
@@ -142,6 +152,45 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* ---------- overflow menu ---------- */
+.menu-wrap {
+  position: relative;
+  display: flex;
+}
+.menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+}
+.menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  min-width: 168px;
+  padding: 5px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+.menu-item {
+  display: block;
+  width: 100%;
+  padding: 11px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.menu-item:hover {
+  background: rgba(255, 255, 255, 0.05);
 }
 
 /* ---------- timeline surface ---------- */
@@ -389,6 +438,60 @@ body {
   flex-direction: column;
   gap: 8px;
   align-items: flex-end;
+}
+
+/* ---------- search results ---------- */
+.results {
+  margin-top: 4px;
+  max-height: min(44dvh, 340px);
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.results-empty {
+  padding: 14px 12px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.result {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.result:last-child {
+  border-bottom: 0;
+}
+.result:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.result-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.result-title {
+  font-size: 14px;
+  font-weight: 600;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.result-year {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
 }
 
 /* ---------- settings choices ---------- */

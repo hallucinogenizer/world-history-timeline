@@ -87,10 +87,22 @@ gh release create vX.Y.Z "apk-share/WorldHistoryTimeline.apk#World History Timel
   outward. Either way, when the lanes run out the least-important cards are
   dropped rather than overlapped, and the count comes back as `overflow` for the
   badge to report.
-- **View all.** A toggle in the zoom controls temporarily ignores the zoom-level
-  filter and shows every event. Deliberately not persisted — it's a peek.
+- **View all.** The eye toggle in the zoom controls temporarily ignores the
+  zoom-level filter and shows every event. Deliberately not persisted — it's a
+  peek.
+- **Search** (magnifier in the top bar) filters on title + description; an empty
+  query lists every event by date, so it doubles as an index. Picking a result
+  calls `viewFocusedOn` — centre on the event and zoom in just far enough that
+  its level is visible, never zooming out — then opens its detail card.
+- **Top bar** holds only the frequent actions (search, full screen); Add event
+  and Settings live behind the `⋮` menu.
 - **Pan/zoom** is custom pointer handling (no library); a `dragged` ref
-  distinguishes a tap (opens details) from a drag/pinch.
+  distinguishes a tap (opens details) from a drag/pinch. A flick coasts: pointer
+  moves feed a smoothed velocity (px/ms along the time axis), and on release a
+  rAF loop pans with exponential decay (`FLING_*` in `App.tsx`) until it's slow
+  enough to stop or the view clamp stalls it. Anything that moves the view
+  (touch, wheel, zoom buttons, Now, a search jump) cancels the glide first, and
+  the tap that catches a moving timeline only stops it — it doesn't open a card.
 - **Sync/security.** The app authenticates to the Edge Function with the
   **publishable** key and a secret timeline UUID (both in `.env`, baked at build
   time). The **secret** key is server-side only — never in the bundle or git.

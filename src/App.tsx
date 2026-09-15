@@ -25,11 +25,13 @@ import {
   layoutEventsVertical,
   levelVisible,
   LEVEL_COLOR,
+  matchesQuery,
   LEVEL_SPAN_LABEL,
   LEVELS,
   panBy,
   parseMonth,
   posOfYear,
+  viewFocusedOn,
   visibleSpanYears,
   zoomAround,
 } from "./timeline";
@@ -39,6 +41,17 @@ const LANE_H = 40; // spacing between stacked event lanes (horizontal mode)
 const AXIS_GAP = 10; // gap between the axis and the nearest card lane
 const AXIS_FRAC = 0.7; // axis position as a fraction of the cross-axis size
 const DRAG_THRESHOLD = 6; // px of movement before a touch counts as a pan, not a tap
+
+// Flick-to-glide. Velocity is tracked in pixels per millisecond along the time
+// axis, smoothed over the last few pointer samples so one jittery frame can't
+// throw the throw. On release the glide decays exponentially with FLING_TAU as
+// its time constant, which lands it around v0 * FLING_TAU pixels away.
+const FLING_MIN_V = 0.08; // below this, a release is a stop rather than a flick
+const FLING_MAX_V = 4; // cap so a wild flick can't launch the view into orbit
+const FLING_TAU = 340; // ms
+const FLING_STOP_V = 0.015; // end the glide once it's slower than ~1px/frame
+const FLING_IDLE_MS = 80; // a finger that paused before lifting doesn't throw
+const VELOCITY_SMOOTH = 0.35; // weight of the newest sample in the average
 
 // Vertical mode: a fixed gutter left of the axis holds the year labels, and
 // event cards sit in columns to its right — one wide column on a phone, more
@@ -60,6 +73,8 @@ export default function App() {
   const [fullscreen, setFullscreen] = useState(false);
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   // Temporary override: show every event regardless of the zoom-level filter.
   // Deliberately not persisted — it's a peek, not a preference.
   const [showAll, setShowAll] = useState(false);
@@ -73,6 +88,11 @@ export default function App() {
   // True once the current gesture has moved far enough to be a pan/pinch.
   // Read by an event's onClick so a drag that ends on a card doesn't open it.
   const dragged = useRef(false);
+  // Flick tracking: smoothed velocity along the time axis, when it was last
+  // sampled, and the handle of the glide currently animating (if any).
+  const velocity = useRef(0);
+  const lastSample = useRef(0);
+  const glide = useRef<number | null>(null);
 
   // Sync bookkeeping (kept in refs to read fresh values inside async/timeout).
   const eventsRef = useRef(events);
@@ -93,6 +113,9 @@ export default function App() {
 
   const sizeRef = useRef(size);
   sizeRef.current = size;
+  // The glide animates outside React's render cycle, so it needs the live view.
+  const viewRef = useRef(view);
+  viewRef.current = view;
   // Read inside stable callbacks (clamp, the wheel listener) so they don't have
   // to be rebuilt when the orientation or surface size changes.
   const mainSpanRef = useRef(mainSpan);
@@ -105,6 +128,42 @@ export default function App() {
     (v: ViewState) => clampView(v, mainSpanRef.current, presentYear),
     [presentYear],
   );
+
+  /** Halt any glide in progress. Returns whether one was actually running. */
+  const stopGlide = useCallback(() => {
+    if (glide.current === null) return false;
+    cancelAnimationFrame(glide.current);
+    glide.current = null;
+    return true;
+  }, []);
+
+  // Coast on after a flick, shedding speed until it's imperceptible — or until
+  // the view clamp stops it dead at the end of the timeline.
+  const startGlide = useCallback(() => {
+    const from = viewRef.current;
+    if (!from) return;
+    let current = from;
+    let last = performance.now();
+    const step = (now: number) => {
+      const dt = Math.min(now - last, 64); // a backgrounded tab shouldn't lurch
+      last = now;
+      const next = clamp(panBy(current, velocity.current * dt));
+      const stalled = next.leftYear === current.leftYear;
+      current = next;
+      setView(next);
+      velocity.current *= Math.exp(-dt / FLING_TAU);
+      if (stalled || Math.abs(velocity.current) < FLING_STOP_V) {
+        glide.current = null;
+        return;
+      }
+      glide.current = requestAnimationFrame(step);
+    };
+    glide.current = requestAnimationFrame(step);
+  }, [clamp]);
+
+  useEffect(() => () => {
+    stopGlide();
+  }, [stopGlide]);
 
   // Measure the surface and react to orientation / window changes.
   useLayoutEffect(() => {
@@ -211,6 +270,7 @@ export default function App() {
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      stopGlide();
       const rect = el.getBoundingClientRect();
       const pos = verticalRef.current ? e.clientY - rect.top : e.clientX - rect.left;
       const factor = Math.exp(-e.deltaY * 0.0016);
@@ -218,7 +278,7 @@ export default function App() {
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, []);
+  }, [stopGlide]);
 
   const gestureOf = (pts: { main: number; cross: number }[]) => ({
     center: pts.reduce((sum, p) => sum + p.main, 0) / pts.length,
@@ -247,12 +307,17 @@ export default function App() {
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
+    const caught = stopGlide();
     const p = rel(e);
     pointers.current.set(e.pointerId, p);
     if (pointers.current.size === 1) {
-      dragged.current = false;
+      // A tap that catches a moving timeline should only stop it, not also
+      // open whatever card happened to be under the finger.
+      dragged.current = caught;
       start.current = p;
     }
+    velocity.current = 0;
+    lastSample.current = performance.now();
     rebaseline();
   };
 
@@ -280,12 +345,38 @@ export default function App() {
     const factor = pts.length >= 2 && g.dist > 0 && dist > 0 ? dist / g.dist : 1;
     setView((v) => (v ? clamp(panBy(zoomAround(v, center, factor), dCenter)) : v));
     gesture.current = { center, dist };
+
+    const now = performance.now();
+    const dt = now - lastSample.current;
+    lastSample.current = now;
+    // A long gap means the finger was resting, so the throw starts over.
+    velocity.current =
+      dt > 0 && dt < 120
+        ? velocity.current * (1 - VELOCITY_SMOOTH) + (dCenter / dt) * VELOCITY_SMOOTH
+        : 0;
   };
 
-  const endPointer = (e: React.PointerEvent) => {
+  const endPointer = (e: React.PointerEvent, released: boolean) => {
     pointers.current.delete(e.pointerId);
-    if (pointers.current.size === 0) start.current = null;
     rebaseline();
+    if (pointers.current.size > 0) {
+      // Lifting one finger of a pinch re-centres the gesture; that jump isn't
+      // a throw, so start measuring again from here.
+      velocity.current = 0;
+      lastSample.current = performance.now();
+      return;
+    }
+    start.current = null;
+    const idle = performance.now() - lastSample.current;
+    if (
+      released &&
+      dragged.current &&
+      idle < FLING_IDLE_MS &&
+      Math.abs(velocity.current) > FLING_MIN_V
+    ) {
+      velocity.current = Math.max(-FLING_MAX_V, Math.min(FLING_MAX_V, velocity.current));
+      startGlide();
+    }
   };
 
   // Opening an event's details — skipped if the gesture was a drag/pan.
@@ -294,11 +385,13 @@ export default function App() {
   };
 
   const zoomButton = (factor: number) => {
+    stopGlide();
     if (!view || mainSpan === 0) return;
     setView((v) => (v ? clamp(zoomAround(v, mainSpan / 2, factor)) : v));
   };
 
   const goToPresent = () => {
+    stopGlide();
     if (mainSpan === 0) return;
     const pxPerYear = 5;
     setView(
@@ -307,6 +400,14 @@ export default function App() {
         pxPerYear,
       }),
     );
+  };
+
+  // Jump the timeline to an event — used by search results.
+  const goToEvent = (ev: TimelineEvent) => {
+    stopGlide();
+    setSearchOpen(false);
+    if (view && mainSpan > 0) setView(clamp(viewFocusedOn(ev, view, mainSpan)));
+    setSelectedId(ev.id);
   };
 
   const upsertEvent = (ev: TimelineEvent) => {
@@ -384,11 +485,11 @@ export default function App() {
           <div className="topbar-actions">
             <button
               className="btn round-sm"
-              onClick={() => setSettingsOpen(true)}
-              aria-label="Settings"
-              title="Settings"
+              onClick={() => setSearchOpen(true)}
+              aria-label="Search events"
+              title="Search events"
             >
-              ⚙
+              <SearchIcon />
             </button>
             <button
               className="btn round-sm"
@@ -398,9 +499,46 @@ export default function App() {
             >
               ⛶
             </button>
-            <button className="btn btn-primary" onClick={openAdd}>
-              + Add Event
-            </button>
+            {/* Adding events and changing settings are rare, so they live
+                behind a menu rather than taking up the bar. */}
+            <div className="menu-wrap">
+              <button
+                className="btn round-sm"
+                onClick={() => setMenuOpen((open) => !open)}
+                aria-label="More"
+                aria-expanded={menuOpen}
+                title="More"
+              >
+                ⋮
+              </button>
+              {menuOpen && (
+                <>
+                  <div className="menu-backdrop" onClick={() => setMenuOpen(false)} />
+                  <div className="menu" role="menu">
+                    <button
+                      className="menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        openAdd();
+                      }}
+                    >
+                      Add event
+                    </button>
+                    <button
+                      className="menu-item"
+                      role="menuitem"
+                      onClick={() => {
+                        setMenuOpen(false);
+                        setSettingsOpen(true);
+                      }}
+                    >
+                      Settings
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </header>
       )}
@@ -411,8 +549,8 @@ export default function App() {
           className="surface"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
-          onPointerUp={endPointer}
-          onPointerCancel={endPointer}
+          onPointerUp={(e) => endPointer(e, true)}
+          onPointerCancel={(e) => endPointer(e, false)}
         >
           {view && size.width > 0 && (
             <TimelineCanvas
@@ -430,7 +568,7 @@ export default function App() {
             <div className="empty-hint">
               <div className="empty-title">Your timeline is empty</div>
               <div className="empty-sub">
-                Tap <strong>+ Add Event</strong> to place your first moment in
+                Tap <strong>⋮ → Add event</strong> to place your first moment in
                 history.
               </div>
             </div>
@@ -461,7 +599,7 @@ export default function App() {
               −
             </button>
             <button
-              className={showAll ? "btn round wide toggle-on" : "btn round wide"}
+              className={showAll ? "btn round toggle-on" : "btn round"}
               onClick={() => setShowAll((s) => !s)}
               aria-pressed={showAll}
               aria-label={showAll ? "Back to zoom-filtered events" : "View all events"}
@@ -471,7 +609,7 @@ export default function App() {
                   : "Temporarily show every event at this zoom level"
               }
             >
-              View all
+              <EyeIcon />
             </button>
             <button className="btn round wide" onClick={goToPresent} aria-label="Go to present">
               Now
@@ -488,6 +626,14 @@ export default function App() {
             upsertEvent(ev);
             setFormOpen(false);
           }}
+        />
+      )}
+
+      {searchOpen && (
+        <SearchModal
+          events={events}
+          onPick={goToEvent}
+          onClose={() => setSearchOpen(false)}
         />
       )}
 
@@ -661,6 +807,94 @@ function TimelineCanvas({
       {/* clear of the year labels, which run down the left gutter vertically */}
       <div className={vertical ? "span-label v" : "span-label"}>{spanLabel}</div>
     </>
+  );
+}
+
+/** Magnifier for the search button — a glyph like ⌕ is too small and varies
+ * too much between platforms to sit next to the other icons. */
+function SearchIcon() {
+  return (
+    <svg className="icon sm" viewBox="0 0 24 24" aria-hidden="true">
+      <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <circle cx="10.5" cy="10.5" r="6.5" />
+        <path d="M15.4 15.4 20.5 20.5" />
+      </g>
+    </svg>
+  );
+}
+
+/** The "view all" toggle's glyph — an open eye, drawn to match the text icons. */
+function EyeIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M1.8 12S5.9 5.5 12 5.5 22.2 12 22.2 12 18.1 18.5 12 18.5 1.8 12 1.8 12Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12" r="3.1" fill="currentColor" />
+    </svg>
+  );
+}
+
+function SearchModal({
+  events,
+  onPick,
+  onClose,
+}: {
+  events: TimelineEvent[];
+  onPick: (e: TimelineEvent) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  // An empty query lists everything, so the search box doubles as an index of
+  // the timeline in date order.
+  const results = events
+    .filter((e) => matchesQuery(e, query))
+    .sort((a, b) => a.year - b.year);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Search</h2>
+
+        <label className="field">
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Title or description…"
+          />
+        </label>
+
+        <div className="results">
+          {results.length === 0 ? (
+            <div className="results-empty">
+              {events.length === 0 ? "No events yet." : `Nothing matches “${query.trim()}”.`}
+            </div>
+          ) : (
+            results.map((e) => (
+              <button key={e.id} className="result" onClick={() => onPick(e)}>
+                <span
+                  className="result-dot"
+                  style={{ background: LEVEL_COLOR[e.level] }}
+                />
+                <span className="result-title">{e.title || "(untitled)"}</span>
+                <span className="result-year">{formatYear(e.year)}</span>
+              </button>
+            ))
+          )}
+        </div>
+
+        <div className="modal-actions">
+          <button className="btn" onClick={onClose}>
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
