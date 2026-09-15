@@ -73,33 +73,35 @@ export function floorVisibleLevel(view: ViewState): number {
   return 0;
 }
 
-export function xOfYear(year: number, view: ViewState): number {
+/** Pixel offset of a year along the time axis (x horizontally, y vertically). */
+export function posOfYear(year: number, view: ViewState): number {
   return (year - view.leftYear) * view.pxPerYear;
 }
 
-export function yearOfX(x: number, view: ViewState): number {
-  return view.leftYear + x / view.pxPerYear;
+/** Inverse of posOfYear: the year at a pixel offset along the time axis. */
+export function yearAtPos(pos: number, view: ViewState): number {
+  return view.leftYear + pos / view.pxPerYear;
 }
 
-/** Visible span in years for a surface of the given pixel width. */
-export function visibleSpanYears(width: number, view: ViewState): number {
-  return width / view.pxPerYear;
+/** Visible span in years for a time axis of the given pixel length. */
+export function visibleSpanYears(mainSpan: number, view: ViewState): number {
+  return mainSpan / view.pxPerYear;
 }
 
 /**
- * Zoom by `factor` around a fixed screen x position, keeping the year under
- * that point stationary. Returns the new view.
+ * Zoom by `factor` around a fixed point on the time axis, keeping the year
+ * under that point stationary. Returns the new view.
  */
-export function zoomAround(view: ViewState, screenX: number, factor: number): ViewState {
+export function zoomAround(view: ViewState, pos: number, factor: number): ViewState {
   const pxPerYear = clampScale(view.pxPerYear * factor);
-  const yearAtPoint = yearOfX(screenX, view);
-  const leftYear = yearAtPoint - screenX / pxPerYear;
+  const yearAtPoint = yearAtPos(pos, view);
+  const leftYear = yearAtPoint - pos / pxPerYear;
   return { leftYear, pxPerYear };
 }
 
-/** Pan the view horizontally by a pixel delta (positive = content moves right). */
-export function panBy(view: ViewState, dxPixels: number): ViewState {
-  return { ...view, leftYear: view.leftYear - dxPixels / view.pxPerYear };
+/** Pan along the time axis by a pixel delta (positive = content moves forward). */
+export function panBy(view: ViewState, dPixels: number): ViewState {
+  return { ...view, leftYear: view.leftYear - dPixels / view.pxPerYear };
 }
 
 // How far past the present the right edge may scroll, and how far back the left
@@ -112,11 +114,11 @@ export const PAST_LIMIT_YEAR = -12000;
 /** Constrain leftYear so the view can't scroll too far into the future/past. */
 export function clampView(
   view: ViewState,
-  width: number,
+  mainSpan: number,
   presentYear: number,
 ): ViewState {
-  if (width <= 0) return view;
-  const span = width / view.pxPerYear;
+  if (mainSpan <= 0) return view;
+  const span = mainSpan / view.pxPerYear;
   const maxFuture = Math.min(span * FUTURE_LIMIT_FRACTION, FUTURE_LIMIT_MAX_YEARS);
   const maxLeftYear = presentYear + maxFuture - span; // right edge at present + margin
   let leftYear = Math.min(view.leftYear, maxLeftYear);
@@ -148,7 +150,8 @@ export function niceStep(view: ViewState, targetPx = TICK_TARGET_PX): number {
 
 export interface Tick {
   year: number;
-  x: number;
+  /** Pixel offset along the time axis. */
+  pos: number;
   major: boolean; // lands on a rounder boundary → emphasized label
 }
 
@@ -167,15 +170,15 @@ export function majorTickStep(step: number): number {
   return major;
 }
 
-/** Year gridline ticks covering the visible width (plus a small margin). */
-export function computeTicks(width: number, view: ViewState): Tick[] {
+/** Year gridline ticks covering the visible span (plus a small margin). */
+export function computeTicks(mainSpan: number, view: ViewState): Tick[] {
   const step = niceStep(view);
   const major = majorTickStep(step);
-  const startYear = Math.floor(yearOfX(-40, view) / step) * step;
-  const endYear = yearOfX(width + 40, view);
+  const startYear = Math.floor(yearAtPos(-40, view) / step) * step;
+  const endYear = yearAtPos(mainSpan + 40, view);
   const ticks: Tick[] = [];
   for (let y = startYear; y <= endYear; y += step) {
-    ticks.push({ year: y, x: xOfYear(y, view), major: y % major === 0 });
+    ticks.push({ year: y, pos: posOfYear(y, view), major: y % major === 0 });
     if (ticks.length > 400) break; // safety valve
   }
   return ticks;
@@ -183,11 +186,22 @@ export function computeTicks(width: number, view: ViewState): Tick[] {
 
 export interface PlacedEvent {
   event: TimelineEvent;
-  x: number;
+  /** Pixel offset along the time axis (x when horizontal, y when vertical). */
+  pos: number;
+  /** 0 = nearest the axis. */
   lane: number;
   width: number;
 }
 
+export interface LayoutResult {
+  placed: PlacedEvent[];
+  /** On-screen events dropped because there weren't enough lanes for them. */
+  overflow: number;
+  /** Vertical mode: the width each card column was given (0 horizontally). */
+  colWidth: number;
+}
+
+export const CARD_H = 32;
 export const CARD_MIN_W = 54;
 export const CARD_MAX_W = 320;
 
@@ -236,6 +250,49 @@ export function estimateCardWidth(event: TimelineEvent): number {
   return Math.min(CARD_MAX_W, Math.max(CARD_MIN_W, Math.ceil(content) + CARD_CHROME));
 }
 
+interface Candidate {
+  event: TimelineEvent;
+  pos: number;
+  w: number;
+}
+
+const LANE_GAP = 8;
+
+/** Candidates within (or just off) the visible span, positioned along the axis. */
+function candidates(
+  events: TimelineEvent[],
+  view: ViewState,
+  mainSpan: number,
+  widthOf: (e: TimelineEvent) => number,
+  margin: (w: number) => number,
+): Candidate[] {
+  return events
+    .map((event) => ({ event, pos: posOfYear(event.year, view), w: widthOf(event) }))
+    .filter((p) => p.pos > -margin(p.w) && p.pos < mainSpan + margin(p.w));
+}
+
+/**
+ * Turn the lane groups that fit into placed events (`kept[0]` becomes lane 0)
+ * and count the events in the groups that didn't.
+ */
+function place(
+  kept: Candidate[][],
+  dropped: Candidate[][],
+  colWidth = 0,
+): LayoutResult {
+  const placed: PlacedEvent[] = [];
+  kept.forEach((group, lane) => {
+    for (const p of group) {
+      placed.push({ event: p.event, pos: p.pos, lane, width: p.w });
+    }
+  });
+  return {
+    placed,
+    overflow: dropped.reduce((n, g) => n + g.length, 0),
+    colWidth,
+  };
+}
+
 /**
  * Assign events to stacked lanes above the axis. Vertical position encodes
  * importance: the least-important visible level sits nearest the axis (lane 0)
@@ -244,44 +301,104 @@ export function estimateCardWidth(event: TimelineEvent): number {
  * into as many sub-lanes as needed to avoid horizontal overlap, always placed
  * strictly above the previous (less-important) level's lanes. Each card is
  * sized to its own content width.
+ *
+ * When more lanes are needed than `maxLanes`, the least-important (and, within
+ * a level, the most crowded) lanes are dropped rather than piled on top of each
+ * other — the caller reports the dropped count so the view stays honest.
  */
 export function layoutEvents(
   events: TimelineEvent[],
   view: ViewState,
   width: number,
-): PlacedEvent[] {
-  const visible = events
-    .map((event) => ({
-      event,
-      x: xOfYear(event.year, view),
-      w: estimateCardWidth(event),
-    }))
-    .filter((p) => p.x > -(p.w + 60) && p.x < width + (p.w + 60));
+  maxLanes = Infinity,
+): LayoutResult {
+  const visible = candidates(events, view, width, estimateCardWidth, (w) => w + 60);
 
-  const gap = 8;
-  const placed: PlacedEvent[] = [];
+  const groups: Candidate[][] = [];
   // Higher L number = less important = nearer the axis, so process levels in
   // descending order and stack each above the last.
   const levels = [...new Set(visible.map((p) => p.event.level))].sort((a, b) => b - a);
-  let laneFloor = 0;
   for (const level of levels) {
     const group = visible
       .filter((p) => p.event.level === level)
-      .sort((a, b) => a.x - b.x);
+      .sort((a, b) => a.pos - b.pos);
     const laneEnds: number[] = []; // right edge (x) occupied per sub-lane
+    const lanes: Candidate[][] = [];
     for (const p of group) {
-      const left = p.x - p.w / 2;
-      let sub = laneEnds.findIndex((end) => left > end + gap);
+      const left = p.pos - p.w / 2;
+      let sub = laneEnds.findIndex((end) => left > end + LANE_GAP);
       if (sub === -1) {
         sub = laneEnds.length;
         laneEnds.push(0);
+        lanes.push([]);
       }
-      laneEnds[sub] = p.x + p.w / 2;
-      placed.push({ event: p.event, x: p.x, lane: laneFloor + sub, width: p.w });
+      laneEnds[sub] = p.pos + p.w / 2;
+      lanes[sub].push(p);
     }
-    laneFloor += laneEnds.length;
+    // Later sub-lanes hold the overflow from a crowded stretch, so list them
+    // first: they're the first to go when lanes run out.
+    for (let i = lanes.length - 1; i >= 0; i--) groups.push(lanes[i]);
   }
-  return placed;
+  const drop = Math.max(0, groups.length - maxLanes);
+  return place(groups.slice(drop), groups.slice(0, drop));
+}
+
+/** Vertical mode: the narrowest a card column is allowed to get. */
+export const V_COL_MIN_W = 132;
+
+/**
+ * Vertical-mode layout: time runs down the screen and cards sit in columns to
+ * the right of the axis. Unlike the horizontal lanes, a column here isn't tied
+ * to one importance level — a phone only has room for a single column, so
+ * events of every level share it and only crowding pushes a card outward.
+ * Cards are placed most-important-first, so they claim the column nearest the
+ * axis and it's the minor ones that spill over (and drop, if the columns run
+ * out).
+ *
+ * Collisions depend only on card height, so the columns needed are known before
+ * their width is: the pass below packs first, then shares `laneSpace` out
+ * between however many columns turned out to be needed.
+ */
+export function layoutEventsVertical(
+  events: TimelineEvent[],
+  view: ViewState,
+  height: number,
+  laneSpace: number,
+): LayoutResult {
+  const visible = candidates(events, view, height, () => 0, () => CARD_H);
+  const order = [...visible].sort(
+    (a, b) => a.event.level - b.event.level || a.pos - b.pos,
+  );
+
+  const spans: { top: number; bottom: number }[][] = []; // occupied per column
+  const columns: Candidate[][] = [];
+  for (const p of order) {
+    const top = p.pos - CARD_H / 2 - 3;
+    const bottom = p.pos + CARD_H / 2 + 3;
+    let col = spans.findIndex((taken) =>
+      taken.every((s) => bottom <= s.top || top >= s.bottom),
+    );
+    if (col === -1) {
+      col = spans.length;
+      spans.push([]);
+      columns.push([]);
+    }
+    spans[col].push({ top, bottom });
+    columns[col].push(p);
+  }
+
+  const maxCols = Math.max(
+    1,
+    Math.floor((laneSpace + LANE_GAP) / (V_COL_MIN_W + LANE_GAP)),
+  );
+  const cols = Math.min(Math.max(1, columns.length), maxCols);
+  const colWidth = Math.min(
+    CARD_MAX_W,
+    (laneSpace - (cols - 1) * LANE_GAP) / cols,
+  );
+  for (const p of visible) p.w = Math.min(colWidth, estimateCardWidth(p.event));
+
+  return place(columns.slice(0, cols), columns.slice(cols), colWidth);
 }
 
 const MONTHS = [

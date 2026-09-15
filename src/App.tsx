@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { TimelineEvent, ViewState } from "./types";
+import type { Orientation, Settings, TimelineEvent, ViewState } from "./types";
 import {
   cryptoId,
   loadEvents,
+  loadSettings,
   loadUpdatedAt,
   loadView,
   saveEvents,
+  saveSettings,
   saveUpdatedAt,
   saveView,
 } from "./storage";
 import { pullRemote, pushRemote, syncEnabled } from "./sync";
 import {
+  CARD_H,
   clampView,
   computeTicks,
   DEFAULT_LEVEL,
@@ -19,22 +22,31 @@ import {
   formatYear,
   formatYearShort,
   layoutEvents,
+  layoutEventsVertical,
   levelVisible,
   LEVEL_COLOR,
   LEVEL_SPAN_LABEL,
   LEVELS,
   panBy,
   parseMonth,
+  posOfYear,
   visibleSpanYears,
-  xOfYear,
   zoomAround,
 } from "./timeline";
+import type { PlacedEvent } from "./timeline";
 
-const LANE_H = 40; // vertical spacing between stacked event lanes
-const CARD_H = 32; // event card height
-const AXIS_GAP = 10; // gap between the axis and the lowest card lane
-const AXIS_FRAC = 0.7; // axis vertical position as fraction of surface height
+const LANE_H = 40; // spacing between stacked event lanes (horizontal mode)
+const AXIS_GAP = 10; // gap between the axis and the nearest card lane
+const AXIS_FRAC = 0.7; // axis position as a fraction of the cross-axis size
 const DRAG_THRESHOLD = 6; // px of movement before a touch counts as a pan, not a tap
+
+// Vertical mode: a fixed gutter left of the axis holds the year labels, and
+// event cards sit in columns to its right — one wide column on a phone, more
+// on a larger screen. V_RIGHT_GUTTER keeps those columns clear of the floating
+// zoom controls.
+const V_AXIS_X = 88;
+const V_COL_GAP = 8;
+const V_RIGHT_GUTTER = 100;
 
 export default function App() {
   const [events, setEvents] = useState<TimelineEvent[]>(() => loadEvents());
@@ -46,11 +58,18 @@ export default function App() {
   const [editing, setEditing] = useState<TimelineEvent | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Temporary override: show every event regardless of the zoom-level filter.
+  // Deliberately not persisted — it's a peek, not a preference.
+  const [showAll, setShowAll] = useState(false);
 
   const surfaceRef = useRef<HTMLDivElement>(null);
-  const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
-  const gesture = useRef<{ cx: number; dist: number } | null>(null);
-  const start = useRef<{ x: number; y: number } | null>(null);
+  // Pointer positions in axis-relative terms: `main` runs along the time axis,
+  // `cross` across it, so one set of gesture maths serves both orientations.
+  const pointers = useRef<Map<number, { main: number; cross: number }>>(new Map());
+  const gesture = useRef<{ center: number; dist: number } | null>(null);
+  const start = useRef<{ main: number; cross: number } | null>(null);
   // True once the current gesture has moved far enough to be a pan/pinch.
   // Read by an event's onClick so a drag that ends on a card doesn't open it.
   const dragged = useRef(false);
@@ -64,12 +83,26 @@ export default function App() {
   eventsRef.current = events;
   updatedAtRef.current = updatedAt;
 
+  // "auto" follows the device: portrait reads vertically, landscape across.
+  const vertical =
+    settings.orientation === "auto"
+      ? size.height > size.width
+      : settings.orientation === "vertical";
+  // Pixel length of the time axis: across the screen, or down it.
+  const mainSpan = vertical ? size.height : size.width;
+
   const sizeRef = useRef(size);
   sizeRef.current = size;
+  // Read inside stable callbacks (clamp, the wheel listener) so they don't have
+  // to be rebuilt when the orientation or surface size changes.
+  const mainSpanRef = useRef(mainSpan);
+  mainSpanRef.current = mainSpan;
+  const verticalRef = useRef(vertical);
+  verticalRef.current = vertical;
   const clampedInit = useRef(false);
   const presentYear = new Date().getFullYear();
   const clamp = useCallback(
-    (v: ViewState) => clampView(v, sizeRef.current.width, presentYear),
+    (v: ViewState) => clampView(v, mainSpanRef.current, presentYear),
     [presentYear],
   );
 
@@ -88,12 +121,12 @@ export default function App() {
   // Initialise the default view once we know the surface width: present year
   // near the right edge, showing roughly the last few centuries.
   useEffect(() => {
-    if (size.width === 0) return;
+    if (mainSpan === 0) return;
     if (!view) {
       const pxPerYear = 5;
       setView(
         clamp({
-          leftYear: presentYear - (size.width * 0.82) / pxPerYear,
+          leftYear: presentYear - (mainSpan * 0.82) / pxPerYear,
           pxPerYear,
         }),
       );
@@ -102,7 +135,17 @@ export default function App() {
       clampedInit.current = true;
       setView((v) => (v ? clamp(v) : v));
     }
-  }, [view, size.width, clamp, presentYear]);
+  }, [view, mainSpan, clamp, presentYear]);
+
+  // The axis changes length when the orientation flips, so the clamp has to be
+  // re-applied against the new span.
+  useEffect(() => {
+    if (mainSpan === 0) return;
+    setView((v) => (v ? clamp(v) : v));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vertical]);
+
+  useEffect(() => saveSettings(settings), [settings]);
 
   useEffect(() => saveEvents(events), [events]);
   useEffect(() => saveUpdatedAt(updatedAt), [updatedAt]);
@@ -169,13 +212,22 @@ export default function App() {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const rect = el.getBoundingClientRect();
-      const x = e.clientX - rect.left;
+      const pos = verticalRef.current ? e.clientY - rect.top : e.clientX - rect.left;
       const factor = Math.exp(-e.deltaY * 0.0016);
-      setView((v) => (v ? clamp(zoomAround(v, x, factor)) : v));
+      setView((v) => (v ? clamp(zoomAround(v, pos, factor)) : v));
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, []);
+
+  const gestureOf = (pts: { main: number; cross: number }[]) => ({
+    center: pts.reduce((sum, p) => sum + p.main, 0) / pts.length,
+    crossCenter: pts.reduce((sum, p) => sum + p.cross, 0) / pts.length,
+    dist:
+      pts.length >= 2
+        ? Math.hypot(pts[0].main - pts[1].main, pts[0].cross - pts[1].cross)
+        : 0,
+  });
 
   const rebaseline = useCallback(() => {
     const pts = [...pointers.current.values()];
@@ -183,38 +235,39 @@ export default function App() {
       gesture.current = null;
       return;
     }
-    const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
-    const dist = pts.length >= 2 ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : 0;
-    gesture.current = { cx, dist };
+    const g = gestureOf(pts);
+    gesture.current = { center: g.center, dist: g.dist };
   }, []);
 
-  const relX = (clientX: number) => {
+  const rel = (e: React.PointerEvent) => {
     const rect = surfaceRef.current!.getBoundingClientRect();
-    return clientX - rect.left;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    return vertical ? { main: y, cross: x } : { main: x, cross: y };
   };
 
   const onPointerDown = (e: React.PointerEvent) => {
-    pointers.current.set(e.pointerId, { x: relX(e.clientX), y: e.clientY });
+    const p = rel(e);
+    pointers.current.set(e.pointerId, p);
     if (pointers.current.size === 1) {
       dragged.current = false;
-      start.current = { x: relX(e.clientX), y: e.clientY };
+      start.current = p;
     }
     rebaseline();
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
     if (!pointers.current.has(e.pointerId)) return;
-    pointers.current.set(e.pointerId, { x: relX(e.clientX), y: e.clientY });
+    pointers.current.set(e.pointerId, rel(e));
 
     const pts = [...pointers.current.values()];
-    const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
-    const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-    const dist = pts.length >= 2 ? Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) : 0;
+    const { center, crossCenter, dist } = gestureOf(pts);
 
     // Ignore sub-threshold jitter from a single finger so a tap stays a tap.
     if (!dragged.current && pts.length < 2) {
       const s = start.current;
-      if (s && Math.hypot(cx - s.x, cy - s.y) <= DRAG_THRESHOLD) return;
+      if (s && Math.hypot(center - s.main, crossCenter - s.cross) <= DRAG_THRESHOLD)
+        return;
     }
     dragged.current = true;
 
@@ -223,10 +276,10 @@ export default function App() {
       rebaseline();
       return;
     }
-    const dcx = cx - g.cx;
+    const dCenter = center - g.center;
     const factor = pts.length >= 2 && g.dist > 0 && dist > 0 ? dist / g.dist : 1;
-    setView((v) => (v ? clamp(panBy(zoomAround(v, cx, factor), dcx)) : v));
-    gesture.current = { cx, dist };
+    setView((v) => (v ? clamp(panBy(zoomAround(v, center, factor), dCenter)) : v));
+    gesture.current = { center, dist };
   };
 
   const endPointer = (e: React.PointerEvent) => {
@@ -241,16 +294,16 @@ export default function App() {
   };
 
   const zoomButton = (factor: number) => {
-    if (!view || size.width === 0) return;
-    setView((v) => (v ? clamp(zoomAround(v, size.width / 2, factor)) : v));
+    if (!view || mainSpan === 0) return;
+    setView((v) => (v ? clamp(zoomAround(v, mainSpan / 2, factor)) : v));
   };
 
   const goToPresent = () => {
-    if (size.width === 0) return;
+    if (mainSpan === 0) return;
     const pxPerYear = 5;
     setView(
       clamp({
-        leftYear: presentYear - (size.width * 0.82) / pxPerYear,
+        leftYear: presentYear - (mainSpan * 0.82) / pxPerYear,
         pxPerYear,
       }),
     );
@@ -274,11 +327,46 @@ export default function App() {
   };
 
   const selected = events.find((e) => e.id === selectedId) ?? null;
+  // What the zoom level would show on its own, so the badge and the toggle can
+  // still say how many events "View all" is pulling in.
+  const inZoomCount = view
+    ? events.filter((e) => levelVisible(e.level, view)).length
+    : 0;
+  const hiddenCount = events.length - inZoomCount;
   const shownEvents = view
-    ? events.filter((e) => levelVisible(e.level, view))
+    ? showAll
+      ? events
+      : events.filter((e) => levelVisible(e.level, view))
     : [];
-  const hiddenCount = events.length - shownEvents.length;
   const floor = view ? floorVisibleLevel(view) : 6;
+
+  // Room for lanes across the axis: stacked rows above it horizontally, card
+  // columns beside it vertically.
+  const laneSpace = vertical
+    ? Math.max(0, size.width - V_AXIS_X - AXIS_GAP - V_RIGHT_GUTTER)
+    : Math.max(0, size.height * AXIS_FRAC - AXIS_GAP);
+
+  const { placed, overflow, colWidth } =
+    view && mainSpan > 0
+      ? vertical
+        ? layoutEventsVertical(shownEvents, view, mainSpan, laneSpace)
+        : layoutEvents(shownEvents, view, mainSpan, Math.max(1, Math.floor(laneSpace / LANE_H)))
+      : { placed: [] as PlacedEvent[], overflow: 0, colWidth: 0 };
+
+  // Two ways an event can be missing: its level is below the zoom threshold, or
+  // this stretch of timeline is too crowded to give it a lane.
+  const badgeText = showAll
+    ? overflow > 0
+      ? `Showing all ${events.length} events · ${overflow} too crowded to place`
+      : `Showing all ${events.length} events`
+    : floor >= 1
+      ? `Showing events significant for ≥ ${LEVEL_SPAN_LABEL[floor]} · ${
+          hiddenCount + overflow
+        } hidden`
+      : `Zoom in to reveal events`;
+
+  const setOrientation = (orientation: Orientation) =>
+    setSettings((s) => ({ ...s, orientation }));
 
   const openAdd = () => {
     setEditing(null);
@@ -294,6 +382,14 @@ export default function App() {
             World History Timeline
           </div>
           <div className="topbar-actions">
+            <button
+              className="btn round-sm"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Settings"
+              title="Settings"
+            >
+              ⚙
+            </button>
             <button
               className="btn round-sm"
               onClick={() => setFullscreen(true)}
@@ -320,10 +416,12 @@ export default function App() {
         >
           {view && size.width > 0 && (
             <TimelineCanvas
-              events={shownEvents}
+              placed={placed}
               view={view}
               width={size.width}
               height={size.height}
+              vertical={vertical}
+              colWidth={colWidth}
               onSelect={selectEvent}
             />
           )}
@@ -338,12 +436,8 @@ export default function App() {
             </div>
           )}
 
-          {hiddenCount > 0 && (
-            <div className="badge">
-              {floor >= 1
-                ? `Showing events significant for ≥ ${LEVEL_SPAN_LABEL[floor]} · ${hiddenCount} hidden`
-                : `Zoom in to reveal events`}
-            </div>
+          {(showAll || hiddenCount + overflow > 0) && events.length > 0 && (
+            <div className={showAll ? "badge on" : "badge"}>{badgeText}</div>
           )}
 
           {fullscreen && (
@@ -366,6 +460,19 @@ export default function App() {
             <button className="btn round" onClick={() => zoomButton(1 / 1.6)} aria-label="Zoom out">
               −
             </button>
+            <button
+              className={showAll ? "btn round wide toggle-on" : "btn round wide"}
+              onClick={() => setShowAll((s) => !s)}
+              aria-pressed={showAll}
+              aria-label={showAll ? "Back to zoom-filtered events" : "View all events"}
+              title={
+                showAll
+                  ? "Back to the events this zoom level shows"
+                  : "Temporarily show every event at this zoom level"
+              }
+            >
+              View all
+            </button>
             <button className="btn round wide" onClick={goToPresent} aria-label="Go to present">
               Now
             </button>
@@ -381,6 +488,14 @@ export default function App() {
             upsertEvent(ev);
             setFormOpen(false);
           }}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsModal
+          settings={settings}
+          onOrientation={setOrientation}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
 
@@ -401,71 +516,104 @@ export default function App() {
 }
 
 function TimelineCanvas({
-  events,
+  placed,
   view,
   width,
   height,
+  vertical,
+  colWidth,
   onSelect,
 }: {
-  events: TimelineEvent[];
+  placed: PlacedEvent[];
   view: ViewState;
   width: number;
   height: number;
+  vertical: boolean;
+  colWidth: number;
   onSelect: (id: string) => void;
 }) {
-  const axisY = height * AXIS_FRAC;
-  const ticks = computeTicks(width, view);
-  const placed = layoutEvents(events, view, width);
-  const maxLanes = Math.max(1, Math.floor((axisY - AXIS_GAP) / LANE_H));
+  // `mainSpan` runs along the time axis; `axisPos` is the axis's offset across
+  // it — how far down the surface (horizontal) or how far in from the left
+  // (vertical). Cards sit on the far side of the axis from the year labels.
+  const mainSpan = vertical ? height : width;
+  const axisPos = vertical ? V_AXIS_X : height * AXIS_FRAC;
+  const ticks = computeTicks(mainSpan, view);
 
   const present = new Date().getFullYear();
-  const presentX = xOfYear(present, view);
-  const showPresent = presentX >= 0 && presentX <= width;
-  const spanLabel = describeSpan(visibleSpanYears(width, view));
+  const presentPos = posOfYear(present, view);
+  const showPresent = presentPos >= 0 && presentPos <= mainSpan;
+  const spanLabel = describeSpan(visibleSpanYears(mainSpan, view));
 
   return (
     <>
-      {/* faint vertical gridlines aligned with year ticks */}
+      {/* faint gridlines aligned with year ticks */}
       {ticks.map((t) => (
         <div
           key={`g${t.year}`}
           className="gridline"
-          style={{ left: t.x, height: axisY }}
+          style={
+            vertical
+              ? { top: t.pos, left: axisPos, width: Math.max(0, width - axisPos), height: 1 }
+              : { left: t.pos, top: 0, width: 1, height: axisPos }
+          }
         />
       ))}
 
       {/* the axis line */}
-      <div className="axis" style={{ top: axisY }} />
+      <div
+        className={vertical ? "axis v" : "axis"}
+        style={
+          vertical
+            ? { left: axisPos, top: 0, width: 2, height }
+            : { left: 0, top: axisPos, width, height: 2 }
+        }
+      />
 
       {/* present-day marker */}
       {showPresent && (
-        <div className="present" style={{ left: presentX, height }}>
+        <div
+          className={vertical ? "present v" : "present"}
+          style={
+            vertical
+              ? { top: presentPos, left: 0, width, height: 2 }
+              : { left: presentPos, top: 0, width: 2, height }
+          }
+        >
           <span className="present-label">now</span>
         </div>
       )}
 
-      {/* year tick marks + labels below the axis; rounder years emphasized */}
+      {/* year tick marks + labels on the label side of the axis */}
       {ticks.map((t) => (
         <div key={`t${t.year}`}>
           <div
-            className={t.major ? "tick major" : "tick"}
-            style={{ left: t.x, top: axisY }}
+            className={`tick${t.major ? " major" : ""}${vertical ? " v" : ""}`}
+            style={
+              vertical
+                ? { top: t.pos, left: axisPos - (t.major ? 18 : 10) }
+                : { left: t.pos, top: axisPos }
+            }
           />
           <div
-            className={t.major ? "tick-label major" : "tick-label"}
-            style={{ left: t.x, top: axisY + 12 }}
+            className={`tick-label${t.major ? " major" : ""}${vertical ? " v" : ""}`}
+            style={
+              vertical
+                ? { top: t.pos, left: 0, width: Math.max(0, axisPos - 14) }
+                : { left: t.pos, top: axisPos + 12 }
+            }
           >
             {formatYearShort(t.year)}
           </div>
         </div>
       ))}
 
-      {/* events above the axis */}
+      {/* events on the card side of the axis */}
       {placed.map((p) => {
-        // Clamp (not wrap) so the importance ordering is preserved even when
-        // more lanes are needed than fit; the topmost cards just share a lane.
-        const lane = Math.min(p.lane, maxLanes - 1);
-        const cardBottom = axisY - AXIS_GAP - lane * LANE_H;
+        const color = LEVEL_COLOR[p.event.level];
+        // Where this lane's cards start, measured across the axis.
+        const laneEdge = vertical
+          ? axisPos + AXIS_GAP + p.lane * (colWidth + V_COL_GAP)
+          : axisPos - AXIS_GAP - p.lane * LANE_H;
         return (
           <div
             key={p.event.id}
@@ -473,31 +621,31 @@ function TimelineCanvas({
             onClick={() => onSelect(p.event.id)}
           >
             <div
-              className="event-stem"
+              className={vertical ? "event-stem v" : "event-stem"}
               style={{
-                left: p.x,
-                top: cardBottom,
-                height: axisY - cardBottom,
-                background: LEVEL_COLOR[p.event.level],
+                ...(vertical
+                  ? { left: axisPos, top: p.pos, width: laneEdge - axisPos, height: 2 }
+                  : { left: p.pos, top: laneEdge, width: 2, height: axisPos - laneEdge }),
+                background: color,
               }}
             />
             <div
               className="event-dot"
               style={{
-                left: p.x,
-                top: axisY,
-                background: LEVEL_COLOR[p.event.level],
-                boxShadow: `0 0 8px ${LEVEL_COLOR[p.event.level]}cc`,
+                left: vertical ? axisPos : p.pos,
+                top: vertical ? p.pos : axisPos,
+                background: color,
+                boxShadow: `0 0 8px ${color}cc`,
               }}
             />
             <div
               className="event-card"
               style={{
-                left: p.x - p.width / 2,
-                top: cardBottom - CARD_H - 2,
+                left: vertical ? laneEdge : p.pos - p.width / 2,
+                top: vertical ? p.pos - CARD_H / 2 : laneEdge - CARD_H - 2,
                 width: p.width,
                 height: CARD_H,
-                borderColor: `${LEVEL_COLOR[p.event.level]}66`,
+                borderColor: `${color}66`,
               }}
             >
               <div className="event-title">{p.event.title || "(untitled)"}</div>
@@ -510,8 +658,57 @@ function TimelineCanvas({
         );
       })}
 
-      <div className="span-label">{spanLabel}</div>
+      {/* clear of the year labels, which run down the left gutter vertically */}
+      <div className={vertical ? "span-label v" : "span-label"}>{spanLabel}</div>
     </>
+  );
+}
+
+function SettingsModal({
+  settings,
+  onOrientation,
+  onClose,
+}: {
+  settings: Settings;
+  onOrientation: (o: Orientation) => void;
+  onClose: () => void;
+}) {
+  const options: { value: Orientation; label: string; hint: string }[] = [
+    { value: "auto", label: "Auto", hint: "Follow how the phone is held" },
+    { value: "horizontal", label: "Horizontal", hint: "Time runs left → right" },
+    { value: "vertical", label: "Vertical", hint: "Time runs top → bottom" },
+  ];
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>Settings</h2>
+
+        <div className="field">
+          <span>Timeline direction</span>
+          <div className="choice-row">
+            {options.map((o) => (
+              <button
+                key={o.value}
+                className={
+                  settings.orientation === o.value ? "choice selected" : "choice"
+                }
+                onClick={() => onOrientation(o.value)}
+                aria-pressed={settings.orientation === o.value}
+              >
+                <span className="choice-label">{o.label}</span>
+                <span className="choice-hint">{o.hint}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="modal-actions">
+          <button className="btn btn-primary" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 

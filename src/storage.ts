@@ -1,8 +1,11 @@
-import type { TimelineEvent, ViewState } from "./types";
+import type { Settings, TimelineEvent, ViewState } from "./types";
+
+const DEFAULT_SETTINGS: Settings = { orientation: "horizontal" };
 
 const EVENTS_KEY = "timeline.events.v1";
 const VIEW_KEY = "timeline.view.v1";
 const META_KEY = "timeline.meta.v1";
+const SETTINGS_KEY = "timeline.settings.v1";
 
 export function loadEvents(): TimelineEvent[] {
   try {
@@ -52,6 +55,32 @@ export function loadView(): ViewState | null {
 export function saveView(view: ViewState): void {
   try {
     localStorage.setItem(VIEW_KEY, JSON.stringify(view));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** User preferences. Local only — not part of the synced snapshot. */
+export function loadSettings(): Settings {
+  try {
+    const raw = localStorage.getItem(SETTINGS_KEY);
+    if (!raw) return DEFAULT_SETTINGS;
+    const s = JSON.parse(raw);
+    const orientation = s?.orientation;
+    return {
+      orientation:
+        orientation === "vertical" || orientation === "auto"
+          ? orientation
+          : "horizontal",
+    };
+  } catch {
+    return DEFAULT_SETTINGS;
+  }
+}
+
+export function saveSettings(settings: Settings): void {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   } catch {
     /* ignore */
   }
