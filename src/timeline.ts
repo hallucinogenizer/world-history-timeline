@@ -74,6 +74,31 @@ export function floorVisibleLevel(view: ViewState): number {
 }
 
 /** Pixel offset of a year along the time axis (x horizontally, y vertically). */
+/**
+ * A view centred on `event` and zoomed in far enough that its importance level
+ * is visible (see levelVisible) — never zooming *out*, so jumping to a search
+ * result keeps as much context as the event allows.
+ */
+export function viewFocusedOn(
+  event: TimelineEvent,
+  view: ViewState,
+  mainSpan: number,
+): ViewState {
+  const span = LEVEL_YEARS[event.level] ?? LEVEL_YEARS[DEFAULT_LEVEL];
+  const pxPerYear = clampScale(Math.max(view.pxPerYear, LEVEL_VISIBLE_PX / span));
+  return { pxPerYear, leftYear: event.year - mainSpan / 2 / pxPerYear };
+}
+
+/** Does an event match a free-text query (title or description)? */
+export function matchesQuery(event: TimelineEvent, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    event.title.toLowerCase().includes(q) ||
+    event.description.toLowerCase().includes(q)
+  );
+}
+
 export function posOfYear(year: number, view: ViewState): number {
   return (year - view.leftYear) * view.pxPerYear;
 }
