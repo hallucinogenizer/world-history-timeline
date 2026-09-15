@@ -45,13 +45,13 @@ gh release create vX.Y.Z "apk-share/WorldHistoryTimeline.apk#World History Timel
 
 ## Layout
 
-- `src/App.tsx` — the whole UI: the pan/zoom surface, event cards, Add/Edit and
-  detail modals, full-screen mode, and the sync effects (pull on launch,
-  debounced push on edit).
+- `src/App.tsx` — the whole UI: the pan/zoom surface, event cards, Add/Edit,
+  detail and settings modals, full-screen mode, and the sync effects (pull on
+  launch, debounced push on edit).
 - `src/timeline.ts` — pure helpers: coordinate transforms, zoom clamp, the
   importance-level model, tick steps, event lane layout, date/month parsing.
-- `src/storage.ts` — localStorage load/save (events, view, updatedAt) + old-data
-  migration.
+- `src/storage.ts` — localStorage load/save (events, view, updatedAt, settings)
+  + old-data migration.
 - `src/sync.ts` — Supabase sync client (calls the Edge Function).
 - `src/types.ts` — `TimelineEvent`, `ViewState`.
 - `supabase/functions/timeline/` — the sync Edge Function (`@supabase/server`).
@@ -70,6 +70,25 @@ gh release create vX.Y.Z "apk-share/WorldHistoryTimeline.apk#World History Timel
 - **View clamp.** `clampView` stops horizontal scroll from going far past the
   present (right edge ≤ present + ~15% of the visible span, capped) or before
   `PAST_LIMIT_YEAR`. Every view mutation in `App.tsx` goes through `clamp(...)`.
+- **Orientation.** Settings (gear in the top bar) switches between auto,
+  horizontal (time left → right) and vertical (time top → bottom); auto picks
+  vertical whenever the surface is taller than it is wide, so rotating the
+  phone flips it. The choice is local-only
+  (`timeline.settings.v1`), not part of the synced snapshot. Internally there's
+  one time axis: `posOfYear` / `yearAtPos` / `clampView` all work in "pixels
+  along the axis" (`mainSpan` = width horizontally, height vertically), and
+  pointer input is converted to `main`/`cross` so one set of gesture maths
+  serves both. Vertically the axis sits at `V_AXIS_X`, year labels in the gutter
+  to its left and event cards in columns to its right.
+- **Lane layout.** Horizontally (`layoutEvents`) each importance level gets its
+  own band of lanes, most important highest. Vertically
+  (`layoutEventsVertical`) a phone only fits one column, so levels *share*
+  columns — cards are placed most-important-first and only crowding pushes one
+  outward. Either way, when the lanes run out the least-important cards are
+  dropped rather than overlapped, and the count comes back as `overflow` for the
+  badge to report.
+- **View all.** A toggle in the zoom controls temporarily ignores the zoom-level
+  filter and shows every event. Deliberately not persisted — it's a peek.
 - **Pan/zoom** is custom pointer handling (no library); a `dragged` ref
   distinguishes a tap (opens details) from a drag/pinch.
 - **Sync/security.** The app authenticates to the Edge Function with the

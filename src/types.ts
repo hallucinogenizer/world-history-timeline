@@ -17,8 +17,19 @@ export interface TimelineEvent {
 }
 
 export interface ViewState {
-  /** The year located at the left edge (x = 0) of the timeline surface. */
+  /** The year at the start of the time axis — the left edge in horizontal
+   * mode, the top edge in vertical mode. */
   leftYear: number;
-  /** Horizontal scale: screen pixels per year. */
+  /** Scale along the time axis: screen pixels per year. */
   pxPerYear: number;
+}
+
+/**
+ * Which way time runs across the screen. "auto" follows the device: vertical
+ * while the screen is taller than it is wide, horizontal once it's turned.
+ */
+export type Orientation = "auto" | "horizontal" | "vertical";
+
+export interface Settings {
+  orientation: Orientation;
 }
