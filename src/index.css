@@ -526,6 +526,47 @@ body {
   color: var(--muted);
 }
 
+/* ---------- sliders ---------- */
+.dial {
+  margin-top: 10px;
+}
+.dial.disabled {
+  opacity: 0.45;
+}
+.dial-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.dial-label {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.dial-reading {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 650;
+}
+.slider {
+  width: 100%;
+  padding: 0;
+  margin: 6px 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  accent-color: var(--accent);
+}
+.slider:focus {
+  outline: none;
+}
+.dial-ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* ---------- modals ---------- */
 .modal-backdrop {
   position: fixed;

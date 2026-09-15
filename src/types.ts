@@ -32,4 +32,10 @@ export type Orientation = "auto" | "horizontal" | "vertical";
 
 export interface Settings {
   orientation: Orientation;
+  /** Whether a flick keeps the timeline coasting after the finger lifts. */
+  inertiaEnabled: boolean;
+  /** How far a flick carries, 1 (barely) to 10 (a long way). */
+  inertiaGlide: number;
+  /** How hard you have to flick to set it off, 1 (a nudge) to 10 (a shove). */
+  inertiaForce: number;
 }
